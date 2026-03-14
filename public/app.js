@@ -19,46 +19,26 @@ const mcpTools = [
   {
     type: 'function',
     function: {
-      name: 'get_weather',
-      description: '取得指定城市的天氣資訊',
-      parameters: {
-        type: 'object',
-        properties: {
-          city: { type: 'string', description: '城市名稱，例如：台北' },
-        },
-        required: ['city'],
-      },
-    },
-    icon: '🌤️',
-    handler: async (args) => {
-      const weathers = ['晴天 ☀️ 28°C', '多雲 ⛅ 24°C', '陰天 ☁️ 20°C', '小雨 🌧️ 18°C', '雷陣雨 ⛈️ 22°C'];
-      const weather = weathers[Math.floor(Math.random() * weathers.length)];
-      return JSON.stringify({ city: args.city, weather, humidity: `${50 + Math.floor(Math.random() * 40)}%`, updated: new Date().toLocaleString('zh-TW') });
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'search_web',
-      description: '在網路上搜尋資訊',
+      description: '在網路上搜尋真實資訊，適合查詢最新新聞、事實、知識等',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: '搜尋關鍵字' },
+          query: { type: 'string', description: '搜尋關鍵字或問題，建議使用英文以獲得更好結果' },
         },
         required: ['query'],
       },
     },
     icon: '🔍',
     handler: async (args) => {
-      return JSON.stringify({
-        query: args.query,
-        results: [
-          { title: `${args.query} - 維基百科`, url: `https://zh.wikipedia.org/wiki/${args.query}`, snippet: `關於 ${args.query} 的詳細介紹...` },
-          { title: `${args.query} 的最新資訊`, url: `https://example.com/${args.query}`, snippet: `最新的 ${args.query} 相關新聞和資料...` },
-          { title: `如何了解 ${args.query}`, url: `https://example.com/learn/${args.query}`, snippet: `完整的 ${args.query} 學習指南...` },
-        ],
-      });
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(args.query)}`);
+        const data = await res.json();
+        if (!res.ok) return JSON.stringify({ error: data.error || '搜尋失敗' });
+        return JSON.stringify(data);
+      } catch (e) {
+        return JSON.stringify({ error: `搜尋失敗: ${e.message}` });
+      }
     },
   },
   {
@@ -77,7 +57,6 @@ const mcpTools = [
     icon: '🧮',
     handler: async (args) => {
       try {
-        // 安全的數學計算（僅允許基本運算）
         const sanitized = args.expression.replace(/[^0-9+\-*/().%\s]/g, '');
         const result = Function('"use strict"; return (' + sanitized + ')')();
         return JSON.stringify({ expression: args.expression, result: result });
@@ -104,6 +83,36 @@ const mcpTools = [
         timezone: 'Asia/Taipei',
         unix: Math.floor(now.getTime() / 1000),
       });
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_slack_message',
+      description: '透過 Slack 傳送訊息到指定頻道。如果未指定頻道，會發送到預設頻道。',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: '要發送的訊息內容' },
+          channel: { type: 'string', description: '頻道名稱，例如：#general 或 #random（可選，留空使用預設頻道）' },
+        },
+        required: ['message'],
+      },
+    },
+    icon: '💬',
+    handler: async (args) => {
+      try {
+        const res = await fetch('/api/slack/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: args.message, channel: args.channel }),
+        });
+        const data = await res.json();
+        if (!res.ok) return JSON.stringify({ error: data.error || 'Slack 發送失敗' });
+        return JSON.stringify({ success: true, message: data.message, channel: data.channel });
+      } catch (e) {
+        return JSON.stringify({ error: `發送失敗: ${e.message}` });
+      }
     },
   },
 ];

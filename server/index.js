@@ -21,6 +21,8 @@ app.use('/api/sessions', require('./routes/sessions'));
 app.use('/api/messages', require('./routes/messages'));
 app.use('/api/fork', require('./routes/fork'));
 app.use('/api/chat', require('./routes/chat'));
+app.use('/api/search', require('./routes/search'));
+app.use('/api/slack', require('./routes/slack'));
 
 // 初始化資料庫
 async function initDB() {
