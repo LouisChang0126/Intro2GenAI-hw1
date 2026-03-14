@@ -458,15 +458,52 @@ async function deleteSession(sessionId) {
 
 // ============ 訊息渲染 ============
 function renderMessages() {
-  dom.messagesContainer.innerHTML = state.messages
-    .map((msg, idx) => renderMessageHtml(msg, idx))
-    .join('');
+  dom.messagesContainer.innerHTML = '';
+  let i = 0;
+  while (i < state.messages.length) {
+    const msg = state.messages[i];
+
+    // tool 訊息已被配對到前一個 assistant tool_calls，跳過獨立渲染
+    if (msg.role === 'tool') { i++; continue; }
+
+    // assistant 含 tool_calls：配對後續 tool 訊息，合併為 details 區塊
+    if (msg.role === 'assistant' && msg.tool_calls) {
+      const toolCalls = typeof msg.tool_calls === 'string'
+        ? JSON.parse(msg.tool_calls) : msg.tool_calls;
+
+      // 若 assistant 有實際 content 或 thinking，先渲染文字泡泡
+      if ((msg.content && msg.content.trim()) || msg.thinking) {
+        appendMessageToDOM(msg, i);
+      }
+
+      // 收集後續 tool 結果
+      const toolResultsMap = {};
+      let j = i + 1;
+      while (j < state.messages.length && state.messages[j].role === 'tool') {
+        const tr = state.messages[j];
+        if (tr.tool_call_id) toolResultsMap[tr.tool_call_id] = tr;
+        j++;
+      }
+
+      // 每個 tool call 渲染合併 details
+      toolCalls.forEach((tc) => {
+        const toolResult = toolResultsMap[tc.id];
+        appendMergedToolCallToDOM(tc, toolResult);
+      });
+
+      i = j;
+      continue;
+    }
+
+    appendMessageToDOM(msg, i);
+    i++;
+  }
   scrollToBottom();
 }
 
 function renderMessageHtml(msg, index) {
-  const roleLabel = msg.role === 'user' ? '你' : msg.role === 'assistant' ? 'AI' : msg.role;
-  const roleIcon = msg.role === 'user' ? '👤' : msg.role === 'assistant' ? '✨' : '🔧';
+  const roleLabel = msg.role === 'user' ? '你' : 'AI';
+  const roleIcon = msg.role === 'user' ? '👤' : '✨';
 
   let thinkingHtml = '';
   if (msg.thinking) {
@@ -478,45 +515,68 @@ function renderMessageHtml(msg, index) {
     `;
   }
 
-  let toolCallsHtml = '';
-  if (msg.tool_calls) {
-    const toolCalls = typeof msg.tool_calls === 'string' ? JSON.parse(msg.tool_calls) : msg.tool_calls;
-    toolCallsHtml = toolCalls
-      .map(
-        (tc) => `
-        <div class="tool-call-block">
-          <div class="tool-call-header">⚙️ 呼叫工具：${escapeHtml(tc.function?.name || tc.name || 'unknown')}</div>
-          <div class="tool-call-result">${escapeHtml(JSON.stringify(tc.function?.arguments || tc.arguments, null, 2))}</div>
-        </div>
-      `
-      )
-      .join('');
-  }
-
-  const contentHtml = msg.role === 'tool'
-    ? `<div class="tool-call-block"><div class="tool-call-header">📋 工具回傳結果</div><div class="tool-call-result">${escapeHtml(msg.content)}</div></div>`
-    : renderMarkdown(msg.content);
+  // Fork 按鈕僅在有實際文字內容的 assistant 訊息顯示
+  const showFork = msg.role === 'assistant' && msg.content && msg.content.trim();
+  const forkHtml = showFork ? `
+    <div class="message-actions">
+      <button class="btn-fork" onclick="forkFromMessage('${msg.id}')" title="從此處分支對話">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="18" cy="18" r="3"></circle>
+          <circle cx="6" cy="6" r="3"></circle>
+          <circle cx="18" cy="6" r="3"></circle>
+          <path d="M6 9v6c0 3 6 6 9 6"></path>
+          <line x1="6" y1="9" x2="6" y2="6"></line>
+        </svg>
+        Fork
+      </button>
+    </div>
+  ` : '';
 
   return `
     <div class="message ${msg.role}" data-id="${msg.id}" data-index="${index}">
-      <div class="message-actions">
-        <button class="btn-fork" onclick="forkFromMessage('${msg.id}')" title="從此處分支對話">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="18" cy="18" r="3"></circle>
-            <circle cx="6" cy="6" r="3"></circle>
-            <circle cx="18" cy="6" r="3"></circle>
-            <path d="M6 9v6c0 3 6 6 9 6"></path>
-            <line x1="6" y1="9" x2="6" y2="6"></line>
-          </svg>
-          Fork
-        </button>
-      </div>
+      ${forkHtml}
       <div class="message-role">${roleIcon} ${roleLabel}</div>
       ${thinkingHtml}
-      ${toolCallsHtml}
-      <div class="message-content">${contentHtml}</div>
+      <div class="message-content">${renderMarkdown(msg.content)}</div>
     </div>
   `;
+}
+
+// 渲染歷史工具調用（call + result 合併為一個 details）
+function appendMergedToolCallToDOM(tc, toolResult) {
+  const toolName = tc.function?.name || 'unknown';
+  const toolDef = mcpTools.find((t) => t.function.name === toolName);
+  const icon = toolDef?.icon || '⚙️';
+
+  let argsDisplay = '';
+  try { argsDisplay = JSON.stringify(JSON.parse(tc.function?.arguments || '{}'), null, 2); }
+  catch { argsDisplay = tc.function?.arguments || ''; }
+
+  let resultHtml = '';
+  if (toolResult) {
+    let resultDisplay = toolResult.content;
+    try { resultDisplay = JSON.stringify(JSON.parse(toolResult.content), null, 2); } catch {}
+    resultHtml = `
+      <div class="tool-call-section-label">📤 回傳結果</div>
+      <pre class="tool-call-result">${escapeHtml(resultDisplay)}</pre>
+    `;
+  }
+
+  const details = document.createElement('details');
+  details.className = 'tool-call-details';
+  details.open = false;
+  details.innerHTML = `
+    <summary class="tool-call-summary">
+      <span class="tool-call-status-icon">${toolResult ? '✅' : '⏳'}</span>
+      ${icon} <strong>${escapeHtml(toolName)}</strong>
+    </summary>
+    <div class="tool-call-body">
+      <div class="tool-call-section-label">📥 輸入參數</div>
+      <pre class="tool-call-result">${escapeHtml(argsDisplay)}</pre>
+      ${resultHtml}
+    </div>
+  `;
+  dom.messagesContainer.appendChild(details);
 }
 
 // ============ 發送訊息 ============
@@ -583,7 +643,15 @@ async function sendMessage() {
   await streamAIResponse();
 }
 
-async function streamAIResponse() {
+const MAX_TOOL_DEPTH = 10;
+
+async function streamAIResponse(depth = 0) {
+  // 防止無限遞迴工具調用
+  if (depth > MAX_TOOL_DEPTH) {
+    showToast(`工具調用層數達到上限（${MAX_TOOL_DEPTH}次），已自動停止`, 'error');
+    return;
+  }
+
   state.isStreaming = true;
   dom.btnSend.classList.add('hidden');
   dom.btnStop.classList.remove('hidden');
@@ -641,6 +709,11 @@ async function streamAIResponse() {
       tools: tools.length > 0 ? tools : undefined,
       stream: true,
     };
+
+    // 禁止並行工具調用，防止一次生成過多 tool call
+    if (tools.length > 0) {
+      requestBody.parallel_tool_calls = false;
+    }
 
     const res = await fetch('/api/chat', {
       method: 'POST',
@@ -727,14 +800,22 @@ async function streamAIResponse() {
     // 處理工具調用
     if (collectedToolCalls.length > 0) {
       assistantMessage.tool_calls = collectedToolCalls;
-      updateStreamingMessage(assistantMessage);
 
-      // 儲存 assistant 訊息
+      // 移除第一個 streaming 泡泡
+      const oldStreaming = document.getElementById('streaming-message');
+      if (oldStreaming) {
+        if (assistantMessage.content.trim() || assistantMessage.thinking) {
+          // 有 content/thinking → finalize 留下文字泡泡
+          finalizeStreamingMessage(assistantMessage);
+        } else {
+          // 空泡泡 → 直接移除，工具調用由 details 塊表示
+          oldStreaming.remove();
+        }
+      }
+
       await saveMessageToDB(assistantMessage);
-
-      // 執行工具調用
-      await executeToolCalls(collectedToolCalls, msgIndex);
-      return; // executeToolCalls 會遞迴呼叫 streamAIResponse
+      await executeToolCalls(collectedToolCalls, msgIndex, depth);
+      return;
     }
 
     // 儲存 assistant 訊息
@@ -769,13 +850,14 @@ function stopStreaming() {
 }
 
 // ============ 工具調用 ============
-async function executeToolCalls(toolCalls, assistantMsgIndex) {
+async function executeToolCalls(toolCalls, assistantMsgIndex, depth = 0) {
   for (const tc of toolCalls) {
     const toolName = tc.function.name;
     const toolDef = mcpTools.find((t) => t.function.name === toolName);
+    const callId = tc.id || `${toolName}_${Date.now()}`;
 
-    // 顯示工具調用進度
-    appendToolCallProgress(toolName, tc.function.arguments);
+    // 顯示工具調用進度（可折疊）
+    appendToolCallProgress(toolName, tc.function.arguments, callId);
     scrollToBottom();
 
     let result;
@@ -799,52 +881,90 @@ async function executeToolCalls(toolCalls, assistantMsgIndex) {
     };
     state.messages.push(toolMessage);
 
-    // 更新工具進度 UI
-    updateToolCallResult(toolName, result);
+    // 更新工具進度 UI，完成後折疊
+    updateToolCallResult(callId, toolName, result);
 
     // 儲存到資料庫
     await saveMessageToDB(toolMessage);
   }
 
-  // 再次呼叫 AI 處理工具結果
-  await streamAIResponse();
+  // 再次呼叫 AI 處理工具結果（傳遞深度+1）
+  await streamAIResponse(depth + 1);
 }
 
-function appendToolCallProgress(toolName, args) {
-  const container = dom.messagesContainer;
+function appendToolCallProgress(toolName, args, callId) {
   const toolDef = mcpTools.find((t) => t.function.name === toolName);
   const icon = toolDef?.icon || '⚙️';
 
-  const div = document.createElement('div');
-  div.className = 'message tool-progress';
-  div.id = `tool-progress-${toolName}`;
-  div.innerHTML = `
-    <div class="tool-call-block">
-      <div class="tool-call-header">
-        ${icon} 正在呼叫工具：${escapeHtml(toolName)}
-        <div class="typing-indicator"><span></span><span></span><span></span></div>
-      </div>
-      <div class="tool-call-result">${escapeHtml(args)}</div>
+  let argsDisplay = args;
+  try { argsDisplay = JSON.stringify(JSON.parse(args), null, 2); } catch {}
+
+  // 工具調用 details 區塊（執行中展開）
+  const details = document.createElement('details');
+  details.className = 'tool-call-details';
+  details.id = `tool-progress-${callId}`;
+  details.open = true;
+  details.innerHTML = `
+    <summary class="tool-call-summary">
+      <span class="tool-call-status-icon"><div class="thinking-spinner"></div></span>
+      ${icon} <strong>${escapeHtml(toolName)}</strong>
+    </summary>
+    <div class="tool-call-body">
+      <div class="tool-call-section-label">📥 輸入參數</div>
+      <pre class="tool-call-result">${escapeHtml(argsDisplay)}</pre>
     </div>
   `;
-  container.appendChild(div);
+  dom.messagesContainer.appendChild(details);
+
+  // 執行中顯示「···」等待泡泡
+  const waitDiv = document.createElement('div');
+  waitDiv.className = 'message assistant tool-waiting';
+  waitDiv.id = `tool-wait-${callId}`;
+  waitDiv.innerHTML = `
+    <div class="message-role">✨ AI</div>
+    <div class="message-content">
+      <div class="typing-indicator"><span></span><span></span><span></span></div>
+    </div>
+  `;
+  dom.messagesContainer.appendChild(waitDiv);
 }
 
-function updateToolCallResult(toolName, result) {
-  const el = document.getElementById(`tool-progress-${toolName}`);
-  if (el) {
-    const header = el.querySelector('.tool-call-header');
-    const toolDef = mcpTools.find((t) => t.function.name === toolName);
-    const icon = toolDef?.icon || '⚙️';
-    header.innerHTML = `${icon} 工具回傳：${escapeHtml(toolName)} ✅`;
+function updateToolCallResult(callId, toolName, result) {
+  // 移除「···」等待泡泡
+  const waitEl = document.getElementById(`tool-wait-${callId}`);
+  if (waitEl) waitEl.remove();
 
-    const resultEl = el.querySelector('.tool-call-result');
-    try {
-      resultEl.textContent = JSON.stringify(JSON.parse(result), null, 2);
-    } catch {
-      resultEl.textContent = result;
-    }
+  const el = document.getElementById(`tool-progress-${callId}`);
+  if (!el) return;
+
+  const toolDef = mcpTools.find((t) => t.function.name === toolName);
+  const icon = toolDef?.icon || '⚙️';
+
+  // 將結果加入 body
+  let resultDisplay = result;
+  try { resultDisplay = JSON.stringify(JSON.parse(result), null, 2); } catch {}
+
+  const body = el.querySelector('.tool-call-body');
+  if (body) {
+    const sec = document.createElement('div');
+    sec.innerHTML = `
+      <div class="tool-call-section-label" style="margin-top:8px">📤 回傳結果</div>
+      <pre class="tool-call-result">${escapeHtml(resultDisplay)}</pre>
+    `;
+    body.appendChild(sec);
   }
+
+  // 更新 summary 為完成狀態
+  const summary = el.querySelector('.tool-call-summary');
+  if (summary) {
+    summary.innerHTML = `
+      <span class="tool-call-status-icon">✅</span>
+      ${icon} <strong>${escapeHtml(toolName)}</strong>
+    `;
+  }
+
+  // 折疊
+  el.open = false;
 }
 
 // ============ DOM 操作 ============
@@ -889,20 +1009,7 @@ function updateStreamingMessage(msg) {
   if (msg.content) {
     contentEl.innerHTML = renderMarkdown(msg.content);
   }
-
-  // 更新 tool_calls
-  if (msg.tool_calls) {
-    let toolHtml = msg.tool_calls
-      .map(
-        (tc) => `
-        <div class="tool-call-block">
-          <div class="tool-call-header">⚙️ 呼叫工具：${escapeHtml(tc.function?.name || '')}</div>
-        </div>
-      `
-      )
-      .join('');
-    contentEl.innerHTML = toolHtml + contentEl.innerHTML;
-  }
+  // tool_calls 不在串流泡泡內顯示，由 appendToolCallProgress 處理
 }
 
 function finalizeStreamingMessage(msg) {

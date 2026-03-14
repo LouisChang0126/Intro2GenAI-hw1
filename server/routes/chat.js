@@ -10,8 +10,8 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: '請先設定 API Key' });
     }
 
-    // 使用前端傳入的 base URL，預設 OpenAI
-    const base = (apiBaseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
+    // 使用前端傳入的 base URL，預設 Groq
+    const base = (apiBaseUrl || 'https://api.groq.com/openai/v1').replace(/\/$/, '');
     const apiUrl = `${base}/chat/completions`;
 
     const requestBody = {
