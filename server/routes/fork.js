@@ -4,26 +4,31 @@ const db = require('../db');
 
 // POST /api/fork - 分支對話
 router.post('/', async (req, res) => {
+  let client;
   try {
     const { session_id, message_id } = req.body;
 
+    client = await db.pool.connect();
+    await client.query('BEGIN');
+
     // 取得原始對話標題
-    const sessionResult = await db.query('SELECT title FROM sessions WHERE id = $1', [session_id]);
+    const sessionResult = await client.query('SELECT title FROM sessions WHERE id = $1', [session_id]);
     if (sessionResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: '原始對話不存在' });
     }
 
     const originalTitle = sessionResult.rows[0].title;
 
     // 建立新 session
-    const newSession = await db.query(
+    const newSession = await client.query(
       'INSERT INTO sessions (title) VALUES ($1) RETURNING *',
       [`${originalTitle} (分支)`]
     );
     const newSessionId = newSession.rows[0].id;
 
     // 取得從第一筆到指定訊息的所有訊息
-    const messagesResult = await db.query(
+    const messagesResult = await client.query(
       `SELECT role, content, thinking, tool_call_id, tool_calls, created_at
        FROM messages
        WHERE session_id = $1 AND created_at <= (
@@ -35,17 +40,28 @@ router.post('/', async (req, res) => {
 
     // 複製所有訊息到新 session
     for (const msg of messagesResult.rows) {
-      await db.query(
+      await client.query(
         `INSERT INTO messages (session_id, role, content, thinking, tool_call_id, tool_calls)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [newSessionId, msg.role, msg.content, msg.thinking, msg.tool_call_id, msg.tool_calls]
+        [
+          newSessionId,
+          msg.role,
+          msg.content,
+          msg.thinking,
+          msg.tool_call_id,
+          msg.tool_calls ? JSON.stringify(msg.tool_calls) : null
+        ]
       );
     }
 
+    await client.query('COMMIT');
     res.status(201).json(newSession.rows[0]);
   } catch (err) {
+    if (client) await client.query('ROLLBACK');
     console.error('Error forking session:', err);
     res.status(500).json({ error: '無法分支對話' });
+  } finally {
+    if (client) client.release();
   }
 });
 

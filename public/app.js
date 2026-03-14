@@ -1150,10 +1150,16 @@ async function forkFromMessage(messageId) {
         message_id: messageId,
       }),
     });
-    const newSession = await res.json();
-    state.sessions.unshift(newSession);
+    
+    const responseData = await res.json();
+    if (!res.ok) {
+      throw new Error(responseData.error || 'Server Error');
+    }
+    
+    // 如果成功，responseData 就是 newSession
+    state.sessions.unshift(responseData);
     renderSessions();
-    selectSession(newSession.id);
+    selectSession(responseData.id);
     showToast('分支對話已建立');
   } catch (err) {
     console.error('Fork 失敗:', err);

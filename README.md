@@ -8,10 +8,10 @@
 
 - **串流對話** — Server-Sent Events (SSE) 實現逐字打字機效果
 - **思維折疊 (Thinking)** — 自動偵測 `<think>` 標籤，將 AI 思考過程收納至可展開的折疊面板
-- **對話分支 (Fork)** — 在任意歷史訊息處建立分支對話，探索不同對話方向
-- **MCP 工具調用** — 內建 Model Context Protocol 工具架構，AI 可自動呼叫本地工具
-- **歷史紀錄管理** — 側邊欄顯示所有歷史對話，支援搜尋、刪除
-- **自訂 API Key** — API Key 僅儲存於瀏覽器 `localStorage`，不經過伺服器
+- **對話分支 (Fork)** — 在任意歷史訊息處建立分支對話，自動複製該節點前的所有對話與工具狀態
+- **MCP 工具調用** — 內建 Model Context Protocol 工具（如網頁搜尋、Slack 傳訊），AI 會視需求自動呼叫並顯示等待動畫
+- **歷史紀錄管理** — 側邊欄顯示所有歷史對話，支援搜尋、刪除，建立空對話時會顯示直覺的快捷迎賓畫面
+- **自訂 API Key 與模型** — API Key 僅儲存於瀏覽器，支援一鍵從 API 讀取並新增可用模型清單
 - **深色主題** — 精心設計的深色 UI，搭配平滑動畫與漸層效果
 - **Markdown 渲染** — AI 回覆支援完整 Markdown 語法（程式碼區塊、表格、清單等）
 - **響應式設計** — 支援桌面與行動裝置
@@ -64,6 +64,9 @@ npm install
 ```env
 PORT=3000
 DATABASE_URL=postgresql://gpt_ui:gpt_ui@localhost:5432/gen_ai_chat_db
+
+# Tavily API 搜尋設定（請在 https://tavily.com 免費註冊並取得 API Key）
+TAVILY_API_KEY=your-tavily-api-key-here
 
 # Slack Bot 設定（請在 https://api.slack.com/apps 建立 App 並取得 Bot Token）
 # 需要的 OAuth Scopes: chat:write
