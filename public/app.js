@@ -32,12 +32,21 @@ const mcpTools = [
     icon: '🔍',
     handler: async (args) => {
       try {
+        // 防呆：LLM 偶爾會傳遞空字串
+        if (!args.query || args.query.trim() === '') {
+          return JSON.stringify({ error: '搜尋失敗：關鍵字不能為空。請重新調用並提供具體的搜尋關鍵字。' });
+        }
+
         const res = await fetch(`/api/search?q=${encodeURIComponent(args.query)}`);
         const data = await res.json();
-        if (!res.ok) return JSON.stringify({ error: data.error || '搜尋失敗' });
+
+        if (!res.ok) {
+          // 將 API 錯誤轉化為 LLM 讀得懂的提示
+          return JSON.stringify({ error: `搜尋 API 發生錯誤 (${res.status}): ${data.error || '未知錯誤'}。請稍後再試或換個關鍵字。` });
+        }
         return JSON.stringify(data);
       } catch (e) {
-        return JSON.stringify({ error: `搜尋失敗: ${e.message}` });
+        return JSON.stringify({ error: `網路請求失敗: ${e.message}。這可能是系統網路問題，請告知用戶無法執行搜尋。` });
       }
     },
   },
@@ -57,11 +66,34 @@ const mcpTools = [
     icon: '🧮',
     handler: async (args) => {
       try {
-        const sanitized = args.expression.replace(/[^0-9+\-*/().%\s]/g, '');
+        const expr = args.expression;
+
+        // 1. 檢查是否包含英文字母 (LLM 常犯錯誤：塞入 Math.pow 或變數)
+        if (/[a-zA-Z]/.test(expr)) {
+          return JSON.stringify({ error: `計算失敗：你傳入了 '${expr}'。請勿使用英文字母、變數或 Math 函數，只能使用純數字與基本運算符 (+ - * / %)。` });
+        }
+
+        // 2. 檢查不支援的運算符號 (LLM 常犯錯誤：使用 ^ 符號表示次方)
+        if (expr.includes('^')) {
+          return JSON.stringify({ error: `計算失敗：不支援 '^' 符號。若是次方計算，請自行將算式展開 (例如 2^3 改為 2 * 2 * 2)。` });
+        }
+
+        // 3. 嚴格過濾非法字元並比對 (避免無聲錯誤)
+        const sanitized = expr.replace(/[^0-9+\-*/().%\s]/g, '');
+        if (expr.replace(/\s/g, '') !== sanitized.replace(/\s/g, '')) {
+          return JSON.stringify({ error: `計算失敗：包含無法識別的字元。請修正你的數學表達式 '${expr}'。` });
+        }
+
         const result = Function('"use strict"; return (' + sanitized + ')')();
+
+        // 4. 處理除以零或無效計算
+        if (!isFinite(result)) {
+          return JSON.stringify({ error: '計算失敗：結果為無窮大或非有效數字（請檢查是否除以零）。' });
+        }
+
         return JSON.stringify({ expression: args.expression, result: result });
       } catch (e) {
-        return JSON.stringify({ expression: args.expression, error: '無法計算此表達式' });
+        return JSON.stringify({ error: `無法計算此表達式 '${args.expression}'，語法錯誤：${e.message}。請檢查括號是否對稱或運算符是否正確。` });
       }
     },
   },
@@ -588,7 +620,7 @@ function appendMergedToolCallToDOM(tc, toolResult) {
   let resultHtml = '';
   if (toolResult) {
     let resultDisplay = toolResult.content;
-    try { resultDisplay = JSON.stringify(JSON.parse(toolResult.content), null, 2); } catch {}
+    try { resultDisplay = JSON.stringify(JSON.parse(toolResult.content), null, 2); } catch { }
     resultHtml = `
       <div class="tool-call-section-label">📤 回傳結果</div>
       <pre class="tool-call-result">${escapeHtml(resultDisplay)}</pre>
@@ -930,7 +962,7 @@ function appendToolCallProgress(toolName, args, callId) {
   const icon = toolDef?.icon || '⚙️';
 
   let argsDisplay = args;
-  try { argsDisplay = JSON.stringify(JSON.parse(args), null, 2); } catch {}
+  try { argsDisplay = JSON.stringify(JSON.parse(args), null, 2); } catch { }
 
   // 工具調用 details 區塊（執行中展開）
   const details = document.createElement('details');
@@ -975,7 +1007,7 @@ function updateToolCallResult(callId, toolName, result) {
 
   // 將結果加入 body
   let resultDisplay = result;
-  try { resultDisplay = JSON.stringify(JSON.parse(result), null, 2); } catch {}
+  try { resultDisplay = JSON.stringify(JSON.parse(result), null, 2); } catch { }
 
   const body = el.querySelector('.tool-call-body');
   if (body) {

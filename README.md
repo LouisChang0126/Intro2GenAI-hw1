@@ -64,6 +64,11 @@ npm install
 ```env
 PORT=3000
 DATABASE_URL=postgresql://gpt_ui:gpt_ui@localhost:5432/gen_ai_chat_db
+
+# Slack Bot 設定（請在 https://api.slack.com/apps 建立 App 並取得 Bot Token）
+# 需要的 OAuth Scopes: chat:write
+SLACK_BOT_TOKEN=your-slack-bot-token-here
+SLACK_DEFAULT_CHANNEL=#general
 ```
 
 ### 4. 啟動伺服器
@@ -76,22 +81,22 @@ node server/index.js
 
 ## 📖 使用說明
 
-1. **設定 API Key** — 點擊左下角齒輪圖示「設定」，輸入你的 API Key
-2. **開始對話** — 在底部輸入框輸入訊息，按 Enter 送出（Shift+Enter 換行）
-3. **歷史紀錄** — 左側邊欄自動保存所有對話，點擊可切換
-4. **分支對話** — 將滑鼠移到任意訊息上，點擊「Fork」按鈕建立分支
-5. **MCP 工具** — 點擊右上角工具圖示查看可用工具，AI 會在需要時自動呼叫
+1. **設定 API Key 與模型** — 點擊左下角齒輪圖示「設定」，輸入你的 API Key（與 Base URL，若使用 Groq 等相容服務）。點擊「載入 API 可用模型」即可自動獲取並新增模型。
+2. **開始對話** — 在底部輸入框輸入訊息，按 Enter 送出（Shift+Enter 換行）。
+3. **歷史紀錄** — 左側邊欄自動保存所有對話，點擊可切換。
+4. **分支對話** — 將滑鼠移到任意 AI 的回覆訊息上，點擊「Fork」按鈕建立分支。
+5. **MCP 工具** — 點擊右上角工具圖示查看可用工具，AI 會在需要時自動呼叫。
 
 ## 🔧 MCP 內建工具
 
 | 工具 | 說明 |
 |------|------|
-| 🌤️ `get_weather` | 取得指定城市的天氣資訊 |
-| 🔍 `search_web` | 在網路上搜尋資訊 |
+| 🔍 `search_web` | 在網路上搜尋真實資訊（整合 Tavily Search API，專為 AI 優化） |
 | 🧮 `calculate` | 計算數學表達式 |
 | 🕐 `get_current_time` | 取得目前的日期和時間 |
+| 💬 `send_slack_message` | 透過 Slack 傳送訊息到指定頻道 |
 
-> **注意：** 目前 MCP 工具回傳的是模擬資料，可在 `public/app.js` 中的 `mcpTools` 陣列修改或新增工具。
+> **注意：** `search_web` 與 `send_slack_message` 需要在 `.env` 中正確設定對應的 `TAVILY_API_KEY` 與 `SLACK_BOT_TOKEN` 才能成功發送。
 
 ## 📁 專案結構
 
@@ -109,7 +114,10 @@ hw1/
 │       ├── sessions.js     # 對話 CRUD API
 │       ├── messages.js     # 訊息 API
 │       ├── chat.js         # AI 代理 (SSE)
-│       └── fork.js         # 分支對話 API
+│       ├── fork.js         # 分支對話 API
+│       ├── models.js       # 動態取得 API 模型
+│       ├── search.js       # DuckDuckGo 搜尋代理
+│       └── slack.js        # Slack 傳訊代理
 ├── .env                    # 環境變數
 ├── package.json
 └── README.md
@@ -127,3 +135,6 @@ hw1/
 | `POST` | `/api/messages` | 儲存新訊息 |
 | `POST` | `/api/chat` | AI 對話代理（SSE 串流） |
 | `POST` | `/api/fork` | 分支對話 |
+| `POST` | `/api/models` | 取得 API 支援的模型清單 |
+| `GET` | `/api/search` | 搜尋真實網路資料 |
+| `POST` | `/api/slack/send` | 發送 Slack 訊息 |

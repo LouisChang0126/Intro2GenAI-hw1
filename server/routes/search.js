@@ -1,71 +1,54 @@
 const express = require('express');
 const router = express.Router();
 
-// GET /api/search?q=QUERY - 呼叫 DuckDuckGo API 取得真實搜尋結果
+// GET /api/search?q=QUERY - 呼叫 Tavily API 取得最佳化給 AI 的搜尋結果
 router.get('/', async (req, res) => {
   const { q } = req.query;
   if (!q) return res.status(400).json({ error: '缺少搜尋關鍵字' });
 
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey || apiKey === 'your-tavily-api-key-here') {
+    return res.status(400).json({ error: '尚未設定 TAVILY_API_KEY。請先在 .env 檔案中填入你的 Tavily API Key。' });
+  }
+
   try {
-    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1&t=gen_ai_chat`;
+    const url = 'https://api.tavily.com/search';
     const response = await fetch(url, {
-      headers: { 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(8000),
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query: q,
+        search_depth: 'basic', // 可選 'basic' 或 'advanced'
+        include_answer: false, // 我們主要需要回傳結果讓 LLM 閱讀
+        include_images: false,
+        max_results: 5,
+      }),
+      signal: AbortSignal.timeout(10000), // 10秒逾時
     });
 
     if (!response.ok) {
-      throw new Error(`DuckDuckGo API 錯誤: ${response.status}`);
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`Tavily API 錯誤 (${response.status}): ${errorData.detail || '未知錯誤'}`);
     }
 
     const data = await response.json();
-    const results = [];
+    
+    // Tavily 回傳格式: { results: [ { title, url, content, score, ... }, ... ] }
+    const results = (data.results || []).map(r => ({
+      title: r.title || '無標題',
+      url: r.url || '',
+      snippet: r.content || ''
+    }));
 
-    // 摘要文字
-    if (data.AbstractText) {
+    if (results.length === 0) {
       results.push({
-        title: data.Heading || q,
-        snippet: data.AbstractText,
-        url: data.AbstractURL || '',
-        source: data.AbstractSource || '',
+        title: '無搜尋結果',
+        snippet: '無法找到相關的網頁結果。',
+        url: ''
       });
-    }
-
-    // 直接答案（如日期、換算等）
-    if (data.Answer) {
-      results.unshift({
-        title: '直接答案',
-        snippet: data.Answer,
-        url: '',
-        source: 'DuckDuckGo',
-      });
-    }
-
-    // 相關主題
-    if (data.RelatedTopics) {
-      for (const topic of data.RelatedTopics) {
-        if (results.length >= 6) break;
-        // RelatedTopics 可能有 Topics 子列表
-        if (topic.Topics) {
-          for (const sub of topic.Topics) {
-            if (results.length >= 6) break;
-            if (sub.Text && sub.FirstURL) {
-              results.push({
-                title: sub.Text.substring(0, 80),
-                snippet: sub.Text,
-                url: sub.FirstURL,
-                source: '',
-              });
-            }
-          }
-        } else if (topic.Text && topic.FirstURL) {
-          results.push({
-            title: topic.Text.substring(0, 80),
-            snippet: topic.Text,
-            url: topic.FirstURL,
-            source: '',
-          });
-        }
-      }
     }
 
     res.json({ query: q, results });
