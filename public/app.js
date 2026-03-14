@@ -456,7 +456,7 @@ async function createNewSession() {
     state.messages = [];
     renderSessions();
     renderMessages();
-    dom.welcomeScreen.classList.add('hidden');
+    dom.welcomeScreen.classList.remove('hidden');
     dom.messageInput.focus();
     return session;
   } catch (err) {
@@ -474,6 +474,9 @@ async function selectSession(sessionId) {
     const res = await fetch(`/api/sessions/${sessionId}/messages`);
     state.messages = await res.json();
     renderMessages();
+    if (state.messages.length === 0) {
+      dom.welcomeScreen.classList.remove('hidden');
+    }
     scrollToBottom();
   } catch (err) {
     console.error('載入訊息失敗:', err);
@@ -524,6 +527,13 @@ async function deleteSession(sessionId) {
 // ============ 訊息渲染 ============
 function renderMessages() {
   dom.messagesContainer.innerHTML = '';
+  
+  if (state.messages.length === 0) {
+    dom.welcomeScreen.classList.remove('hidden');
+  } else {
+    dom.welcomeScreen.classList.add('hidden');
+  }
+
   let i = 0;
   while (i < state.messages.length) {
     const msg = state.messages[i];
