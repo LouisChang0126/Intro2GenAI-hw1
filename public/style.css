@@ -1171,6 +1171,8 @@ body {
   flex-wrap: wrap;
   gap: 6px;
   min-height: 32px;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 .model-tag {

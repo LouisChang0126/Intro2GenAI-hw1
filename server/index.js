@@ -23,6 +23,7 @@ app.use('/api/fork', require('./routes/fork'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/slack', require('./routes/slack'));
+app.use('/api/models', require('./routes/models'));
 
 // 初始化資料庫
 async function initDB() {

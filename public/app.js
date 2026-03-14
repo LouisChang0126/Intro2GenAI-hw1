@@ -143,8 +143,7 @@ const dom = {
   apiBaseUrlInput: $('#apiBaseUrlInput'),
   btnToggleApiKey: $('#btnToggleApiKey'),
   btnSaveSettings: $('#btnSaveSettings'),
-  modelNameInput: $('#modelNameInput'),
-  btnAddModel: $('#btnAddModel'),
+  btnFetchModels: $('#btnFetchModels'),
   modelTags: $('#modelTags'),
   // Delete Confirm Modal
   deleteConfirmModal: $('#deleteConfirmModal'),
@@ -210,10 +209,7 @@ function bindEvents() {
   dom.btnToggleApiKey.addEventListener('click', toggleApiKeyVisibility);
 
   // 模型新增
-  dom.btnAddModel.addEventListener('click', addModelFromInput);
-  dom.modelNameInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); addModelFromInput(); }
-  });
+  dom.btnFetchModels.addEventListener('click', fetchModelsFromAPI);
 
   // MCP
   dom.btnMcpTools.addEventListener('click', () => dom.mcpModal.classList.remove('hidden'));
@@ -283,19 +279,47 @@ function toggleApiKeyVisibility() {
 }
 
 // ============ 模型管理 ============
-function addModelFromInput() {
-  const name = dom.modelNameInput.value.trim();
-  if (!name) return;
-  if (state.models.includes(name)) {
-    showToast('模型已存在', 'error');
+async function fetchModelsFromAPI() {
+  const apiKey = dom.apiKeyInput.value.trim();
+  const apiBaseUrl = dom.apiBaseUrlInput.value.trim();
+
+  if (!apiKey) {
+    showToast('請先填寫 API Key', 'error');
     return;
   }
-  state.models.push(name);
-  localStorage.setItem('models', JSON.stringify(state.models));
-  dom.modelNameInput.value = '';
-  renderModelTags();
-  renderModelSelect();
-  showToast(`已新增模型：${name}`);
+
+  const originalText = dom.btnFetchModels.textContent;
+  dom.btnFetchModels.textContent = '載入中...';
+  dom.btnFetchModels.disabled = true;
+
+  try {
+    const res = await fetch('/api/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey, apiBaseUrl }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || '取得模型失敗');
+    }
+
+    if (data.models && data.models.length > 0) {
+      state.models = data.models;
+      localStorage.setItem('models', JSON.stringify(state.models));
+      renderModelTags();
+      renderModelSelect();
+      showToast(`已載入 ${data.models.length} 個模型`);
+    } else {
+      showToast('API 未回傳任何模型', 'error');
+    }
+  } catch (err) {
+    console.error('Fetch models error:', err);
+    showToast(`載入失敗: ${err.message}`, 'error');
+  } finally {
+    dom.btnFetchModels.textContent = originalText;
+    dom.btnFetchModels.disabled = false;
+  }
 }
 
 function removeModel(name) {
