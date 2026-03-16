@@ -126,7 +126,7 @@ const mcpTools = [
         type: 'object',
         properties: {
           message: { type: 'string', description: '要發送的訊息內容' },
-          channel: { type: 'string', description: '頻道名稱，例如：#general 或 #random（可選，留空使用預設頻道）' },
+          channel: { type: 'string', description: '頻道名稱，例如：#general 或 #random（可選，不可留空）' },
         },
         required: ['message'],
       },
@@ -527,7 +527,7 @@ async function deleteSession(sessionId) {
 // ============ 訊息渲染 ============
 function renderMessages() {
   dom.messagesContainer.innerHTML = '';
-  
+
   if (state.messages.length === 0) {
     dom.welcomeScreen.classList.remove('hidden');
   } else {
@@ -1150,12 +1150,12 @@ async function forkFromMessage(messageId) {
         message_id: messageId,
       }),
     });
-    
+
     const responseData = await res.json();
     if (!res.ok) {
       throw new Error(responseData.error || 'Server Error');
     }
-    
+
     // 如果成功，responseData 就是 newSession
     state.sessions.unshift(responseData);
     renderSessions();
