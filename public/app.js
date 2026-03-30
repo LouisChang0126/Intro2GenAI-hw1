@@ -302,10 +302,33 @@ function bindEvents() {
 
   // 歡迎畫面建議
   $$('.suggestion-chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
+    chip.addEventListener('click', async () => {
       dom.messageInput.value = chip.dataset.prompt;
       autoResizeTextarea();
-      sendMessage();
+
+      const imgPath = chip.dataset.image;
+      if (imgPath) {
+        try {
+          const res = await fetch(imgPath);
+          const blob = await res.blob();
+          const reader = new FileReader();
+          reader.onload = (evt) => {
+            state.pendingImages.push({
+              dataUrl: evt.target.result,
+              mimeType: blob.type || 'image/jpeg',
+              name: imgPath.split('/').pop() || 'example.jpg'
+            });
+            renderImagePreviews();
+            sendMessage();
+          };
+          reader.readAsDataURL(blob);
+        } catch (err) {
+          console.error('載入範例圖片失敗:', err);
+          sendMessage();
+        }
+      } else {
+        sendMessage();
+      }
     });
   });
 }
