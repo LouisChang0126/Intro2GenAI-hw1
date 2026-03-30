@@ -4,14 +4,15 @@
 
 // ============ 狀態管理 ============
 const state = {
-  apiKey: localStorage.getItem('apiKey') || '',
-  apiBaseUrl: localStorage.getItem('apiBaseUrl') || '',
-  models: JSON.parse(localStorage.getItem('models') || '[]'),
+  // modelConfigs 格式: [{ isDefault: true, apiKey, apiBaseUrl, selectedModel }, { isDefault: false, apiKey, apiBaseUrl, selectedModel, description }, ...]
+  modelConfigs: JSON.parse(localStorage.getItem('modelConfigs') || '[]'),
   currentSessionId: null,
   messages: [],
   sessions: [],
   isStreaming: false,
   abortController: null,
+  pendingImages: [], // [{ dataUrl, mimeType, name }]
+  lastAnswerer: null, // 最後回答的模型名稱
 };
 
 // ============ MCP 工具註冊表 ============
@@ -147,7 +148,64 @@ const mcpTools = [
       }
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'store_memory',
+      description: '儲存或更新長期記憶。當使用者提供個人資訊、偏好或需要跨對話記住的事項時使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: '記憶的鍵名，例如：user_name、preference_language、project_name' },
+          content: { type: 'string', description: '要記住的內容' },
+        },
+        required: ['key', 'content'],
+      },
+    },
+    icon: '🧠',
+    handler: async (args) => {
+      try {
+        const res = await fetch('/api/memory/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: args.key, content: args.content }),
+        });
+        const data = await res.json();
+        if (!res.ok) return JSON.stringify({ error: data.error || '儲存失敗' });
+        return JSON.stringify({ success: true, key: args.key, message: '記憶已成功儲存' });
+      } catch (e) {
+        return JSON.stringify({ error: `儲存失敗: ${e.message}` });
+      }
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'retrieve_memory',
+      description: '讀取長期記憶。傳入 key 可查詢特定記憶；若 key 為空字串則返回所有記憶。',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: '記憶鍵名。若為空字串則返回全部記憶。' },
+        },
+        required: ['key'],
+      },
+    },
+    icon: '💡',
+    handler: async (args) => {
+      try {
+        const q = args.key ? `?key=${encodeURIComponent(args.key)}` : '';
+        const res = await fetch(`/api/memory/get${q}`);
+        const data = await res.json();
+        if (!res.ok) return JSON.stringify({ error: data.error || '讀取失敗' });
+        return JSON.stringify({ memories: data.memories });
+      } catch (e) {
+        return JSON.stringify({ error: `讀取失敗: ${e.message}` });
+      }
+    },
+  },
 ];
+
 
 // ============ DOM 元素 ============
 const $ = (sel) => document.querySelector(sel);
@@ -166,17 +224,18 @@ const dom = {
   btnSend: $('#btnSend'),
   btnStop: $('#btnStop'),
   topBarTitle: $('#topBarTitle'),
-  modelSelect: $('#modelSelect'),
+  routerStatus: $('#routerStatus'),
   // Settings Modal
   settingsModal: $('#settingsModal'),
   btnSettings: $('#btnSettings'),
   btnCloseSettings: $('#btnCloseSettings'),
-  apiKeyInput: $('#apiKeyInput'),
-  apiBaseUrlInput: $('#apiBaseUrlInput'),
-  btnToggleApiKey: $('#btnToggleApiKey'),
   btnSaveSettings: $('#btnSaveSettings'),
-  btnFetchModels: $('#btnFetchModels'),
-  modelTags: $('#modelTags'),
+  modelConfigList: $('#modelConfigList'),
+  btnAddModelConfig: $('#btnAddModelConfig'),
+  // Image Upload
+  imagePreviewArea: $('#imagePreviewArea'),
+  imageFileInput: $('#imageFileInput'),
+  btnUploadImage: $('#btnUploadImage'),
   // Delete Confirm Modal
   deleteConfirmModal: $('#deleteConfirmModal'),
   btnConfirmDelete: $('#btnConfirmDelete'),
@@ -192,19 +251,16 @@ const dom = {
 async function init() {
   // marked.js 設定
   if (typeof marked !== 'undefined') {
-    marked.setOptions({
-      breaks: true,
-      gfm: true,
-    });
+    marked.setOptions({ breaks: true, gfm: true });
   }
 
   bindEvents();
   loadSettings();
   renderMcpTools();
+  renderRouterStatus();
   await loadSessions();
 
-  // 如果沒有任何模型，自動開設定多記用戶
-  if (state.models.length === 0) {
+  if (state.modelConfigs.length === 0) {
     dom.settingsModal.classList.remove('hidden');
     showToast('請先在設定中新增模型，才能開始對話');
   } else {
@@ -216,32 +272,28 @@ async function init() {
 function bindEvents() {
   // 側邊欄切換
   dom.sidebarToggle.addEventListener('click', toggleSidebar);
-
   // 新增對話
   dom.btnNewChat.addEventListener('click', () => createNewSession());
-
   // 搜尋
   dom.searchInput.addEventListener('input', filterSessions);
-
   // 訊息輸入
   dom.messageInput.addEventListener('keydown', handleInputKeydown);
   dom.messageInput.addEventListener('input', autoResizeTextarea);
-
   // 送出
   dom.btnSend.addEventListener('click', sendMessage);
   dom.btnStop.addEventListener('click', stopStreaming);
 
-  // 設定
+  // 設定 Modal
   dom.btnSettings.addEventListener('click', () => {
-    loadSettingsToForm();
+    renderModelConfigCards();
     dom.settingsModal.classList.remove('hidden');
   });
   dom.btnCloseSettings.addEventListener('click', () => dom.settingsModal.classList.add('hidden'));
   dom.btnSaveSettings.addEventListener('click', saveSettings);
-  dom.btnToggleApiKey.addEventListener('click', toggleApiKeyVisibility);
+  dom.btnAddModelConfig.addEventListener('click', addModelConfigCard);
 
-  // 模型新增
-  dom.btnFetchModels.addEventListener('click', fetchModelsFromAPI);
+  // 圖片上傳
+  dom.imageFileInput.addEventListener('change', handleImageFileChange);
 
   // MCP
   dom.btnMcpTools.addEventListener('click', () => dom.mcpModal.classList.remove('hidden'));
@@ -271,6 +323,7 @@ function bindEvents() {
   });
 }
 
+
 // ============ 側邊欄 ============
 function toggleSidebar() {
   dom.sidebar.classList.toggle('collapsed');
@@ -278,130 +331,174 @@ function toggleSidebar() {
 
 // ============ 設定 ============
 function loadSettings() {
-  // 將 state 讀入後渲染元件
-  renderModelSelect();
-}
-
-function loadSettingsToForm() {
-  dom.apiKeyInput.value = state.apiKey;
-  dom.apiBaseUrlInput.value = state.apiBaseUrl;
-  renderModelTags();
+  // 將 state 讀入後渲染元件（保持 routerStatus）
+  renderRouterStatus();
 }
 
 function saveSettings() {
-  state.apiKey = dom.apiKeyInput.value.trim();
-  state.apiBaseUrl = dom.apiBaseUrlInput.value.trim();
-  // models 已在 addModel/removeModel 中即時儲存
+  // 從 DOM 卡片讀取所有設定
+  const cards = dom.modelConfigList.querySelectorAll('.model-config-card');
+  const configs = [];
+  cards.forEach((card, idx) => {
+    const apiKey = card.querySelector('.cfg-apikey').value.trim();
+    const apiBaseUrl = card.querySelector('.cfg-baseurl').value.trim();
+    const selectedModel = card.querySelector('.cfg-model-select').value;
+    const isDefault = idx === 0;
+    const entry = { isDefault, apiKey, apiBaseUrl, selectedModel };
+    if (!isDefault) {
+      entry.description = card.querySelector('.cfg-description')?.value.trim() || '';
+    }
+    configs.push(entry);
+  });
 
-  localStorage.setItem('apiKey', state.apiKey);
-  localStorage.setItem('apiBaseUrl', state.apiBaseUrl);
+  if (configs.length === 0 || !configs[0].apiKey) {
+    showToast('請至少設定一組模型（含 API Key）', 'error');
+    return;
+  }
 
+  state.modelConfigs = configs;
+  localStorage.setItem('modelConfigs', JSON.stringify(configs));
   dom.settingsModal.classList.add('hidden');
+  renderRouterStatus();
   showToast('設定已儲存');
+}
 
-  if (state.models.length === 0) {
-    showToast('請至少新增一個模型', 'error');
-    return;
+// ============ 多組模型卡片 UI ============
+function renderModelConfigCards() {
+  dom.modelConfigList.innerHTML = '';
+  if (state.modelConfigs.length === 0) {
+    // 至少建立一張預設卡
+    addModelConfigCard(true);
+  } else {
+    state.modelConfigs.forEach((cfg, idx) => createModelConfigCardDOM(cfg, idx));
   }
 }
 
-function toggleApiKeyVisibility() {
-  const input = dom.apiKeyInput;
-  input.type = input.type === 'password' ? 'text' : 'password';
+function addModelConfigCard(isFirstDefault = false) {
+  const idx = dom.modelConfigList.querySelectorAll('.model-config-card').length;
+  const isDefault = idx === 0 || isFirstDefault === true;
+  createModelConfigCardDOM({ isDefault, apiKey: '', apiBaseUrl: '', selectedModel: '', description: '' }, idx);
 }
 
-// ============ 模型管理 ============
-async function fetchModelsFromAPI() {
-  const apiKey = dom.apiKeyInput.value.trim();
-  const apiBaseUrl = dom.apiBaseUrlInput.value.trim();
+function createModelConfigCardDOM(cfg, idx) {
+  const isDefault = idx === 0;
+  const card = document.createElement('div');
+  card.className = 'model-config-card';
+  card.innerHTML = `
+    <div class="model-config-card-header">
+      <span class="model-config-title">${isDefault ? '🌟 預設模型 (Router)' : `🤖 模型 ${idx + 1}`}</span>
+      ${!isDefault ? `<button class="btn-remove-config" onclick="this.closest('.model-config-card').remove()" title="移除">✕</button>` : ''}
+    </div>
+    <div class="model-config-field">
+      <label>API Key</label>
+      <input class="cfg-apikey" type="password" placeholder="sk-..." value="${escapeHtml(cfg.apiKey || '')}" autocomplete="off">
+    </div>
+    <div class="model-config-field">
+      <label>API Base URL（可選）</label>
+      <div class="model-fetch-row">
+        <input class="cfg-baseurl" type="text" placeholder="https://api.groq.com/openai/v1" value="${escapeHtml(cfg.apiBaseUrl || '')}">
+        <button class="btn-fetch-models-card" onclick="fetchModelsForCard(this)" type="button">載入模型</button>
+      </div>
+    </div>
+    <div class="model-config-field">
+      <label>選擇模型</label>
+      <select class="cfg-model-select">
+        <option value="">-- 請先按「載入模型」--</option>
+        ${cfg.selectedModel ? `<option value="${escapeHtml(cfg.selectedModel)}" selected>${escapeHtml(cfg.selectedModel)}</option>` : ''}
+      </select>
+    </div>
+    ${!isDefault ? `
+    <div class="model-config-field cfg-desc-field">
+      <label>模型描述（此模型的專長）</label>
+      <textarea class="cfg-description" placeholder="例如：擅長繁體中文、程式碼生成、圖片理解...">${escapeHtml(cfg.description || '')}</textarea>
+    </div>` : ''}
+  `;
+  dom.modelConfigList.appendChild(card);
+}
 
-  if (!apiKey) {
-    showToast('請先填寫 API Key', 'error');
-    return;
-  }
+async function fetchModelsForCard(btn) {
+  const card = btn.closest('.model-config-card');
+  const apiKey = card.querySelector('.cfg-apikey').value.trim();
+  const apiBaseUrl = card.querySelector('.cfg-baseurl').value.trim();
+  if (!apiKey) { showToast('請先填寫 API Key', 'error'); return; }
 
-  const originalText = dom.btnFetchModels.textContent;
-  dom.btnFetchModels.textContent = '載入中...';
-  dom.btnFetchModels.disabled = true;
-
+  const orig = btn.textContent;
+  btn.textContent = '載入中...';
+  btn.disabled = true;
   try {
     const res = await fetch('/api/models', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey, apiBaseUrl }),
     });
-
     const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || '取得模型失敗');
-    }
-
-    if (data.models && data.models.length > 0) {
-      state.models = data.models;
-      localStorage.setItem('models', JSON.stringify(state.models));
-      renderModelTags();
-      renderModelSelect();
-      showToast(`已載入 ${data.models.length} 個模型`);
-    } else {
-      showToast('API 未回傳任何模型', 'error');
-    }
+    if (!res.ok) throw new Error(data.error || '取得模型失敗');
+    const select = card.querySelector('.cfg-model-select');
+    const currentVal = select.value;
+    select.innerHTML = data.models.map((m) => `<option value="${escapeHtml(m)}" ${m === currentVal ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('');
+    showToast(`已載入 ${data.models.length} 個模型`);
   } catch (err) {
-    console.error('Fetch models error:', err);
     showToast(`載入失敗: ${err.message}`, 'error');
   } finally {
-    dom.btnFetchModels.textContent = originalText;
-    dom.btnFetchModels.disabled = false;
+    btn.textContent = orig;
+    btn.disabled = false;
   }
 }
 
-function removeModel(name) {
-  state.models = state.models.filter((m) => m !== name);
-  localStorage.setItem('models', JSON.stringify(state.models));
-  renderModelTags();
-  renderModelSelect();
-}
-
-function renderModelSelect() {
-  const select = dom.modelSelect;
-  const currentVal = select.value;
-  select.innerHTML = '';
-
-  if (state.models.length === 0) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.disabled = true;
-    opt.selected = true;
-    opt.textContent = '等待模型加入';
-    select.appendChild(opt);
+// 頂部路由狀態顯示
+function renderRouterStatus() {
+  const el = dom.routerStatus;
+  if (!el) return;
+  if (state.modelConfigs.length === 0) {
+    el.innerHTML = '<span class="router-badge">未設定模型</span>';
     return;
   }
+  const router = state.modelConfigs[0];
+  const routerName = router.selectedModel || '預設模型';
+  el.innerHTML = `<span class="router-badge active">🌟 ${escapeHtml(routerName)}</span>`;
+}
 
-  state.models.forEach((name) => {
-    const opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = name;
-    if (name === currentVal) opt.selected = true;
-    select.appendChild(opt);
+// ============ 圖片上傳 ============
+function handleImageFileChange(e) {
+  const files = Array.from(e.target.files);
+  if (!files.length) return;
+  files.forEach((file) => {
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      state.pendingImages.push({
+        dataUrl: evt.target.result,
+        mimeType: file.type || 'image/jpeg',
+        name: file.name,
+      });
+      renderImagePreviews();
+    };
+    reader.readAsDataURL(file);
   });
+  e.target.value = ''; // 允許重複選同一張
+}
 
-  // 如果之前選的不在新清單內，預設選第一個
-  if (!state.models.includes(currentVal)) {
-    select.value = state.models[0];
+function renderImagePreviews() {
+  const area = dom.imagePreviewArea;
+  if (state.pendingImages.length === 0) {
+    area.classList.add('hidden');
+    area.innerHTML = '';
+    return;
   }
+  area.classList.remove('hidden');
+  area.innerHTML = state.pendingImages.map((img, i) => `
+    <div class="image-preview-item">
+      <img src="${img.dataUrl}" alt="${escapeHtml(img.name)}">
+      <button class="btn-remove-image" onclick="removePreviewImage(${i})" title="移除">✕</button>
+    </div>
+  `).join('');
 }
 
-function renderModelTags() {
-  dom.modelTags.innerHTML = state.models
-    .map(
-      (name) => `
-      <div class="model-tag">
-        <span>${escapeHtml(name)}</span>
-        <button class="btn-remove-model" onclick="removeModel('${escapeHtml(name)}')" title="移除">&times;</button>
-      </div>
-    `
-    )
-    .join('');
+function removePreviewImage(idx) {
+  state.pendingImages.splice(idx, 1);
+  renderImagePreviews();
 }
+
+
 
 // ============ Sessions 管理 ============
 async function loadSessions() {
@@ -579,6 +676,8 @@ function renderMessages() {
 function renderMessageHtml(msg, index) {
   const roleLabel = msg.role === 'user' ? '你' : 'AI';
   const roleIcon = msg.role === 'user' ? '👤' : '✨';
+  const answererBadge = (msg.role === 'assistant' && msg.answerer)
+    ? `<span class="message-answerer">${escapeHtml(msg.answerer)}</span>` : '';
 
   let thinkingHtml = '';
   if (msg.thinking) {
@@ -590,8 +689,33 @@ function renderMessageHtml(msg, index) {
     `;
   }
 
+  // 圖片附件（從 attachments 渲染，向下相容舊資料）
+  let attachmentsHtml = '';
+  if (msg.attachments && msg.attachments.length > 0) {
+    attachmentsHtml = `<div class="message-attachments">${msg.attachments.map(a =>
+      `<img class="message-attachment-img" src="${a.dataUrl}" alt="${escapeHtml(a.name || '圖片')}" loading="lazy">`
+    ).join('')}</div>`;
+  } else if (Array.isArray(msg.content)) {
+    // Vision 格式：從 content 陣列中提取圖片
+    const imgs = msg.content.filter(c => c.type === 'image_url');
+    if (imgs.length > 0) {
+      attachmentsHtml = `<div class="message-attachments">${imgs.map(c =>
+        `<img class="message-attachment-img" src="${c.image_url.url}" alt="圖片" loading="lazy">`
+      ).join('')}</div>`;
+    }
+  }
+
+  // 從 content 提取文字（相容字串或 Vision 陣列）
+  let textContent = '';
+  if (typeof msg.content === 'string') {
+    textContent = msg.content;
+  } else if (Array.isArray(msg.content)) {
+    const textPart = msg.content.find(c => c.type === 'text');
+    textContent = textPart?.text || '';
+  }
+
   // Fork 按鈕僅在有實際文字內容的 assistant 訊息顯示
-  const showFork = msg.role === 'assistant' && msg.content && msg.content.trim();
+  const showFork = msg.role === 'assistant' && textContent && textContent.trim();
   const forkHtml = showFork ? `
     <div class="message-actions">
       <button class="btn-fork" onclick="forkFromMessage('${msg.id}')" title="從此處分支對話">
@@ -610,12 +734,14 @@ function renderMessageHtml(msg, index) {
   return `
     <div class="message ${msg.role}" data-id="${msg.id}" data-index="${index}">
       ${forkHtml}
-      <div class="message-role">${roleIcon} ${roleLabel}</div>
+      <div class="message-role">${roleIcon} ${roleLabel}${answererBadge}</div>
       ${thinkingHtml}
-      <div class="message-content">${renderMarkdown(msg.content)}</div>
+      ${attachmentsHtml}
+      <div class="message-content">${renderMarkdown(textContent)}</div>
     </div>
   `;
 }
+
 
 // 渲染歷史工具調用（call + result 合併為一個 details）
 function appendMergedToolCallToDOM(tc, toolResult) {
@@ -670,11 +796,14 @@ function autoResizeTextarea() {
 
 async function sendMessage() {
   const content = dom.messageInput.value.trim();
-  if (!content || state.isStreaming) return;
+  const hasImages = state.pendingImages.length > 0;
+  if (!content && !hasImages) return;
+  if (state.isStreaming) return;
 
-  if (!state.apiKey) {
+  if (state.modelConfigs.length === 0 || !state.modelConfigs[0].apiKey) {
     dom.settingsModal.classList.remove('hidden');
-    showToast('請先設定 API Key');
+    renderModelConfigCards();
+    showToast('請先設定模型');
     return;
   }
 
@@ -689,18 +818,43 @@ async function sendMessage() {
   dom.messageInput.style.height = 'auto';
   dom.welcomeScreen.classList.add('hidden');
 
-  // 新增使用者訊息
-  const userMessage = { role: 'user', content, session_id: state.currentSessionId };
+  // 組裝 userMessage content（支援 Vision 格式）
+  let msgContent;
+  if (hasImages) {
+    msgContent = [{ type: 'text', text: content || '請描述這張圖片' }];
+    state.pendingImages.forEach((img) => {
+      msgContent.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+    });
+  } else {
+    msgContent = content;
+  }
+
+  // 清除圖片預覽
+  const capturedImages = [...state.pendingImages];
+  state.pendingImages = [];
+  renderImagePreviews();
+
+  // 新增使用者訊息（儲存圖片在 attachments）
+  const userMessage = {
+    role: 'user',
+    content: msgContent,
+    session_id: state.currentSessionId,
+    attachments: hasImages ? capturedImages.map(({ dataUrl, mimeType, name }) => ({ dataUrl, mimeType, name })) : undefined,
+  };
   state.messages.push(userMessage);
   appendMessageToDOM(userMessage, state.messages.length - 1);
   scrollToBottom();
 
-  // 儲存使用者訊息到資料庫
+  // 儲存使用者訊息到資料庫（content 轉為字串以相容舊欄位）
   try {
+    const dbMsg = {
+      ...userMessage,
+      content: typeof msgContent === 'string' ? msgContent : (content || '[圖片訊息]'),
+    };
     const saved = await fetch('/api/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(userMessage),
+      body: JSON.stringify(dbMsg),
     });
     const savedMsg = await saved.json();
     userMessage.id = savedMsg.id;
@@ -709,14 +863,16 @@ async function sendMessage() {
   }
 
   // 更新 session 標題（如果是第一則訊息）
-  if (state.messages.length === 1) {
-    const title = content.substring(0, 50) + (content.length > 50 ? '...' : '');
+  const userMsgCount = state.messages.filter(m => m.role === 'user').length;
+  if (userMsgCount === 1) {
+    const title = (content || '圖片討論').substring(0, 50) + ((content || '').length > 50 ? '...' : '');
     updateSessionTitle(state.currentSessionId, title);
   }
 
-  // 呼叫 AI
+  // 呼叫 AI（Two-Step 路由）
   await streamAIResponse();
 }
+
 
 const MAX_TOOL_DEPTH = 10;
 
@@ -727,11 +883,17 @@ async function streamAIResponse(depth = 0) {
     return;
   }
 
+  const defaultCfg = state.modelConfigs[0];
+  if (!defaultCfg || !defaultCfg.apiKey) {
+    showToast('請先在設定中設定模型', 'error');
+    return;
+  }
+
   state.isStreaming = true;
   dom.btnSend.classList.add('hidden');
   dom.btnStop.classList.remove('hidden');
 
-  // 準備訊息歷史
+  // 準備訊息歷史（向下相容：content 可能是字串或陣列）
   const apiMessages = state.messages
     .filter((m) => ['user', 'assistant', 'tool', 'system'].includes(m.role))
     .map((m) => {
@@ -744,18 +906,64 @@ async function streamAIResponse(depth = 0) {
     });
 
   // 取得工具定義
-  const tools = mcpTools.map((t) => ({
-    type: t.type,
-    function: t.function,
-  }));
+  const tools = mcpTools.map((t) => ({ type: t.type, function: t.function }));
 
-  const model = dom.modelSelect.value;
-  if (!model) {
-    showToast('請先在設定中新增模型', 'error');
-    state.isStreaming = false;
-    dom.btnSend.classList.remove('hidden');
-    dom.btnStop.classList.add('hidden');
-    return;
+  // ---- Two-Step 路由（只在第一層 depth=0 且有多組模型時運作）----
+  let targetCfg = defaultCfg; // fallback：直接用預設模型
+
+  if (depth === 0 && state.modelConfigs.length > 1) {
+    const otherModels = state.modelConfigs.slice(1);
+    const modelList = otherModels
+      .map((c) => `[${c.selectedModel}: ${c.description || '通用模型'}]`)
+      .join(', ');
+
+    // 檢查最後一則使用者訊息是否含圖片
+    const lastUser = [...state.messages].reverse().find(m => m.role === 'user');
+    const hasVision = Array.isArray(lastUser?.content);
+    const visionHint = hasVision ? '（使用者附帶了圖片，需要視覺理解能力）' : '';
+
+    const routerSystemPrompt = `你是一個智慧路由。請根據使用者的輸入${visionHint}，從以下模型清單選擇最適合的 1 個模型。只能輸出該模型的名稱，不要有其他內容。可用模型：${modelList}`;
+    const routerMessages = [
+      { role: 'system', content: routerSystemPrompt },
+      ...apiMessages,
+    ];
+
+    try {
+      const routerRes = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: defaultCfg.apiKey,
+          apiBaseUrl: defaultCfg.apiBaseUrl || undefined,
+          model: defaultCfg.selectedModel,
+          messages: routerMessages,
+          stream: false,
+        }),
+      });
+
+      if (routerRes.ok) {
+        const routerData = await routerRes.json();
+        const chosenModel = (routerData.choices?.[0]?.message?.content || '').trim();
+        const found = state.modelConfigs.find((c) => c.selectedModel === chosenModel);
+        if (found) {
+          targetCfg = found;
+        }
+      }
+    } catch (routerErr) {
+      console.warn('路由失敗，使用預設模型:', routerErr);
+    }
+  }
+
+  state.lastAnswerer = targetCfg.selectedModel;
+
+  // 更新頂部顯示
+  if (dom.routerStatus) {
+    const routerName = defaultCfg.selectedModel || '預設模型';
+    const answererName = targetCfg.selectedModel || '未知';
+    dom.routerStatus.innerHTML = `
+      <span class="router-badge active">🌟 ${escapeHtml(routerName)}</span>
+      ${targetCfg !== defaultCfg ? `<span style="color:var(--text-tertiary)">→</span><span class="router-badge answerer">✨ ${escapeHtml(answererName)}</span>` : ''}
+    `;
   }
 
   // 建立 AI 訊息佔位
@@ -765,21 +973,22 @@ async function streamAIResponse(depth = 0) {
     thinking: '',
     tool_calls: null,
     session_id: state.currentSessionId,
+    answerer: targetCfg.selectedModel,
   };
   state.messages.push(assistantMessage);
   const msgIndex = state.messages.length - 1;
 
   // 新增 DOM 佔位
-  appendStreamingMessageToDOM();
+  appendStreamingMessageToDOM(targetCfg.selectedModel);
   scrollToBottom();
 
   state.abortController = new AbortController();
 
   try {
     const requestBody = {
-      apiKey: state.apiKey,
-      apiBaseUrl: state.apiBaseUrl || undefined,
-      model,
+      apiKey: targetCfg.apiKey,
+      apiBaseUrl: targetCfg.apiBaseUrl || undefined,
+      model: targetCfg.selectedModel,
       messages: apiMessages,
       tools: tools.length > 0 ? tools : undefined,
       stream: true,
@@ -791,6 +1000,7 @@ async function streamAIResponse(depth = 0) {
     }
 
     const res = await fetch('/api/chat', {
+
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
@@ -1049,13 +1259,14 @@ function appendMessageToDOM(msg, index) {
   container.insertAdjacentHTML('beforeend', html);
 }
 
-function appendStreamingMessageToDOM() {
+function appendStreamingMessageToDOM(answerer) {
   const container = dom.messagesContainer;
   const div = document.createElement('div');
   div.className = 'message assistant streaming';
   div.id = 'streaming-message';
+  const answererBadge = answerer ? `<span class="message-answerer">${escapeHtml(answerer)}</span>` : '';
   div.innerHTML = `
-    <div class="message-role">✨ AI</div>
+    <div class="message-role">✨ AI${answererBadge}</div>
     <div class="thinking-wrapper"></div>
     <div class="message-content">
       <div class="typing-indicator"><span></span><span></span><span></span></div>
@@ -1093,6 +1304,12 @@ function finalizeStreamingMessage(msg) {
 
   el.id = '';
   el.classList.remove('streaming');
+
+  // 更新角色標籤（加入回答者 badge）
+  const roleEl = el.querySelector('.message-role');
+  if (roleEl && msg.answerer) {
+    roleEl.innerHTML = `✨ AI<span class="message-answerer">${escapeHtml(msg.answerer)}</span>`;
+  }
 
   // 最終渲染 thinking
   const thinkingWrapper = el.querySelector('.thinking-wrapper');

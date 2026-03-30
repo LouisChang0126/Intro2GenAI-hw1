@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="AI Chat - 智慧對話介面，支援串流回覆、思維折疊、對話分支與工具調用">
+  <meta name="description" content="AI Chat - 智慧對話介面，支援串流回覆、思維折疊、對話分支、工具調用與多模態圖片輸入">
   <title>AI Chat</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -56,12 +56,10 @@
 
     <!-- 右側主區 -->
     <main class="main-area">
-      <!-- 頂部導覽列 -->
+      <!-- 頂部導覽列（移除舊 modelSelect，改為顯示路由狀態） -->
       <header class="top-bar">
-        <div class="model-selector">
-          <select id="modelSelect">
-            <option value="" disabled selected>等待模型加入</option>
-          </select>
+        <div class="router-status" id="routerStatus">
+          <!-- 動態顯示當前路由器/模型資訊 -->
         </div>
         <div class="top-bar-title" id="topBarTitle">AI Chat</div>
         <div class="top-bar-actions">
@@ -100,9 +98,23 @@
         </div>
       </div>
 
+      <!-- 圖片預覽區 -->
+      <div class="image-preview-area hidden" id="imagePreviewArea">
+        <!-- 動態渲染圖片縮圖 -->
+      </div>
+
       <!-- 底部輸入區 -->
       <div class="input-area">
         <div class="input-wrapper">
+          <!-- 圖片上傳按鈕 -->
+          <label class="btn-upload-image" id="btnUploadImage" title="上傳圖片">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <circle cx="8.5" cy="8.5" r="1.5"></circle>
+              <polyline points="21 15 16 10 5 21"></polyline>
+            </svg>
+            <input type="file" id="imageFileInput" accept="image/*" multiple style="display:none;">
+          </label>
           <textarea id="messageInput" placeholder="輸入訊息... (Enter 送出, Shift+Enter 換行)" rows="1"
             autocomplete="off"></textarea>
           <button class="btn-send" id="btnSend" title="送出">
@@ -124,11 +136,11 @@
     </main>
   </div>
 
-  <!-- 設定 Modal -->
+  <!-- 設定 Modal（多組模型卡片） -->
   <div class="modal-overlay hidden" id="settingsModal">
-    <div class="modal">
+    <div class="modal modal-wide">
       <div class="modal-header">
-        <h2>設定</h2>
+        <h2>⚙️ 模型設定</h2>
         <button class="btn-close-modal" id="btnCloseSettings">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -137,37 +149,18 @@
         </button>
       </div>
       <div class="modal-body">
-        <div class="form-group">
-          <label for="apiKeyInput">API Key</label>
-          <div class="api-key-input-wrapper">
-            <input type="password" id="apiKeyInput" placeholder="sk-..." autocomplete="off">
-            <button class="btn-toggle-visibility" id="btnToggleApiKey" title="顯示/隱藏">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                <circle cx="12" cy="12" r="3"></circle>
-              </svg>
-            </button>
-          </div>
-          <small>API Key 僅儲存於瀏覽器本地，不會傳送到我們的伺服器</small>
+        <p class="settings-hint">第一筆為「🌟 預設模型 (Router)」，負責分析使用者意圖並派發給最適合的模型。其他模型須填寫描述。</p>
+        <!-- 多組模型卡片列表 -->
+        <div class="model-config-list" id="modelConfigList">
+          <!-- 動態渲染 -->
         </div>
-        <div class="form-group">
-          <label for="apiBaseUrlInput">API Base URL（可選）</label>
-          <input type="text" id="apiBaseUrlInput" placeholder="https://api.openai.com/v1">
-          <small>僅在使用相容 API 時修改</small>
-        </div>
-        <div class="form-group">
-          <label>模型清單</label>
-          <div class="model-add-row" style="display: flex; flex-direction: column;">
-            <button class="btn-fetch-models" id="btnFetchModels" type="button"
-              style="width: 100%; padding: 8px; margin-bottom: 8px; border-radius: 4px; border: 1px dashed var(--border-color); background: var(--bg-tertiary); color: var(--text-primary); cursor: pointer; transition: 0.2s;">
-              載入 API 可用模型
-            </button>
-          </div>
-          <div class="model-tags" id="modelTags">
-            <!-- 動態渲染 -->
-          </div>
-          <small>點擊載入後即可自動獲取並新增模型，至少需保留一個模型</small>
-        </div>
+        <button class="btn-add-config" id="btnAddModelConfig">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          新增模型
+        </button>
       </div>
       <div class="modal-footer">
         <button class="btn-save" id="btnSaveSettings">儲存設定</button>

@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 
 // 中介軟體
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // 靜態檔案
 app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -24,6 +24,7 @@ app.use('/api/chat', require('./routes/chat'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/slack', require('./routes/slack'));
 app.use('/api/models', require('./routes/models'));
+app.use('/api/memory', require('./routes/memory'));
 
 // 初始化資料庫
 async function initDB() {
