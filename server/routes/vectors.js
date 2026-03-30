@@ -158,8 +158,10 @@ router.post('/route', async (req, res) => {
     const promptVec = await embed(text);
 
     const scores = await Promise.all(
-      models.map(async ({ name, description }) => {
-        const descVec = await getDescriptionEmbedding(description || name);
+      models.map(async ({ name, description, compareText }) => {
+        // 優先用 compareText（模型名稱），向下相容 description，最終 fallback 到 name
+        const textToEmbed = compareText || description || name;
+        const descVec = await getDescriptionEmbedding(textToEmbed);
         const similarity = cosineSimilarity(promptVec, descVec);
         return { name, similarity };
       })

@@ -910,39 +910,80 @@ async function streamAIResponse(depth = 0) {
     const lastCfg = state.modelConfigs.find(c => c.selectedModel === state.lastAnswerer);
     if (lastCfg) targetCfg = lastCfg;
   } 
-  // 2. 第一步，用 embedding 相似度路由到最適合的專家模型（不需要 LLM 呼叫）
+  // 2. Two-Step 路由：LLM 描述任務需求 → embedding 比對專家模型
   else if (depth === 0 && state.modelConfigs.length > 1) {
     const otherModels = state.modelConfigs.slice(1);
 
-    // 取得 user prompt 文字（圖片附帶 vision hint）
+    // 取得最後一則 user 訊息（純文字）
     const lastUser = [...state.messages].reverse().find(m => m.role === 'user');
     const hasVision = Array.isArray(lastUser?.content);
-    const baseText = hasVision
-      ? ((lastUser.content.find(c => c.type === 'text')?.text || '') + ' [圖片，需要視覺理解能力]')
+    const userText = hasVision
+      ? ((lastUser.content.find(c => c.type === 'text')?.text || '') + '\n[使用者附帶了圖片]')
       : (typeof lastUser?.content === 'string' ? lastUser.content : '');
 
+    console.log('[Router] user prompt:', userText);
+
     try {
+      // 組裝模型清單描述，提供給 Router LLM 參考
+      const modelListText = otherModels.map((c, i) =>
+        `模型 ${i + 1}：${c.selectedModel}\n描述：${c.description || '（無描述）'}`
+      ).join('\n\n');
+
+      // Step 1：呼叫 Router LLM，帶入使用者 prompt + 模型清單，輸出「這任務需要什麼模型」的純文字
+      const routerSystemPrompt =
+        '你是一個任務路由分析器。你會收到使用者的問題，以及目前可用的專家模型清單（含名稱與描述）。\n' +
+        '請根據使用者問題，用 1~2 句話精確描述「這個任務所需的模型名稱」。\n' +
+        '直接輸出最合適的模型名稱，不要推理過程，不要多餘說明。';
+
+      const routerUserContent =
+        `【使用者問題】\n${userText}\n\n` +
+        `【可用專家模型清單】\n${modelListText}`;
+
+      const llmRes = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: defaultCfg.apiKey,
+          apiBaseUrl: defaultCfg.apiBaseUrl || undefined,
+          model: defaultCfg.selectedModel,
+          messages: [
+            { role: 'system', content: routerSystemPrompt },
+            { role: 'user', content: routerUserContent },
+          ],
+          stream: false,
+        }),
+      });
+
+      if (!llmRes.ok) throw new Error(`LLM router 回應錯誤: ${llmRes.status}`);
+
+      const llmData = await llmRes.json();
+      const taskDescription = (llmData.choices?.[0]?.message?.content || '').trim();
+      console.log('[Router] LLM task description:', taskDescription);
+
+      // Step 2：embed(任務描述) vs embed(每個專家模型名稱) → cosine similarity → 選最高分
       const routeRes = await fetch('/api/vectors/route', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: baseText,
+          text: taskDescription,
           models: otherModels.map(c => ({
             name: c.selectedModel,
-            description: c.description || c.selectedModel,
+            // 只用模型名稱做 embedding 比對（不含描述）
+            compareText: c.selectedModel,
           })),
         }),
       });
 
-      if (routeRes.ok) {
-        const routeData = await routeRes.json();
-        const found = state.modelConfigs.slice(1).find(c => c.selectedModel === routeData.selectedModel);
-        if (found) targetCfg = found;
-      } else {
-        console.warn('[Router] /api/vectors/route 失敗，使用預設模型');
-      }
+      if (!routeRes.ok) throw new Error('/api/vectors/route 失敗');
+
+      const routeData = await routeRes.json();
+      console.log('[Router] embedding scores:', routeData.scores?.map(s => `${s.name}: ${s.similarity.toFixed(4)}`).join(', '));
+      console.log('[Router] selected:', routeData.selectedModel, `(similarity: ${routeData.similarity?.toFixed(4)})`);
+
+      const found = state.modelConfigs.slice(1).find(c => c.selectedModel === routeData.selectedModel);
+      if (found) targetCfg = found;
     } catch (routerErr) {
-      console.warn('路由失敗，使用預設模型:', routerErr);
+      console.warn('[Router] 路由失敗，使用預設模型:', routerErr.message);
     }
   }
 
