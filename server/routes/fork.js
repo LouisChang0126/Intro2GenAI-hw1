@@ -29,7 +29,7 @@ router.post('/', async (req, res) => {
 
     // 取得從第一筆到指定訊息的所有訊息
     const messagesResult = await client.query(
-      `SELECT role, content, thinking, tool_call_id, tool_calls, created_at
+      `SELECT role, content, thinking, tool_call_id, tool_calls, attachments, created_at
        FROM messages
        WHERE session_id = $1 AND created_at <= (
          SELECT created_at FROM messages WHERE id = $2
@@ -41,15 +41,16 @@ router.post('/', async (req, res) => {
     // 複製所有訊息到新 session
     for (const msg of messagesResult.rows) {
       await client.query(
-        `INSERT INTO messages (session_id, role, content, thinking, tool_call_id, tool_calls)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO messages (session_id, role, content, thinking, tool_call_id, tool_calls, attachments)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           newSessionId,
           msg.role,
           msg.content,
           msg.thinking,
           msg.tool_call_id,
-          msg.tool_calls ? JSON.stringify(msg.tool_calls) : null
+          msg.tool_calls ? JSON.stringify(msg.tool_calls) : null,
+          msg.attachments ? JSON.stringify(msg.attachments) : null,
         ]
       );
     }

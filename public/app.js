@@ -909,7 +909,7 @@ async function streamAIResponse(depth = 0) {
   if (depth > 0 && state.lastAnswerer) {
     const lastCfg = state.modelConfigs.find(c => c.selectedModel === state.lastAnswerer);
     if (lastCfg) targetCfg = lastCfg;
-  } 
+  }
   // 2. Two-Step 路由：LLM 描述任務需求 → embedding 比對專家模型
   else if (depth === 0 && state.modelConfigs.length > 1) {
     const otherModels = state.modelConfigs.slice(1);
@@ -932,7 +932,7 @@ async function streamAIResponse(depth = 0) {
       // Step 1：呼叫 Router LLM，帶入使用者 prompt + 模型清單，輸出「這任務需要什麼模型」的純文字
       const routerSystemPrompt =
         '你是一個任務路由分析器。你會收到使用者的問題，以及目前可用的專家模型清單（含名稱與描述）。\n' +
-        '請根據使用者問題，用 1~2 句話精確描述「這個任務所需的模型名稱」。\n' +
+        '請根據使用者問題，精確描述「這個任務所需的模型名稱」。\n' +
         '直接輸出最合適的模型名稱，不要推理過程，不要多餘說明。';
 
       const routerUserContent =
