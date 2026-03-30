@@ -840,25 +840,10 @@ async function streamAIResponse(depth = 0) {
   dom.btnSend.classList.add('hidden');
   dom.btnStop.classList.remove('hidden');
 
-  // ---- 自動讀取記憶 + 向量語意搜尋，注入 System Prompt ----
-  let memorySystemPrompt = '';
+  // ---- 向量語意搜尋，注入 System Prompt ----
   let similarContextPrompt = '';
   if (depth === 0) {
-    // 1. 讀取長期記憶（key-value）
-    try {
-      const memRes = await fetch('/api/memory/get');
-      if (memRes.ok) {
-        const memData = await memRes.json();
-        if (memData.memories && memData.memories.length > 0) {
-          const memoriesStr = memData.memories.map(m => `- ${m.key}: ${m.content}`).join('\n');
-          memorySystemPrompt = `以下是關於使用者的長期記憶，請在回答時參考這些資訊：\n${memoriesStr}\n`;
-        }
-      }
-    } catch (err) {
-      console.warn('自動讀取記憶失敗:', err);
-    }
-
-    // 2. 向量語意搜尋：找出過去最相似的 Top-3 完整 session
+    // 向量語意搜尋：找出過去最相似的 Top-3 完整 session
     try {
       const lastUser = [...state.messages].reverse().find(m => m.role === 'user');
       const queryText = typeof lastUser?.content === 'string'
@@ -909,10 +894,8 @@ async function streamAIResponse(depth = 0) {
       return msg;
     });
 
-  // 組合 System Prompt（相似記錄 + 長期記憶），插入最前方
-  const combinedSystemPrompt = [similarContextPrompt, memorySystemPrompt].filter(Boolean).join('\n');
-  if (combinedSystemPrompt) {
-    apiMessages.unshift({ role: 'system', content: combinedSystemPrompt });
+  if (similarContextPrompt) {
+    apiMessages.unshift({ role: 'system', content: similarContextPrompt });
   }
 
   // 取得工具定義

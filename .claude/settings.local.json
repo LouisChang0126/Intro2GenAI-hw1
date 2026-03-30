@@ -4,7 +4,16 @@
       "Bash(npm install:*)",
       "Bash(node -e \"require\\(''@xenova/transformers''\\); console.log\\(''ok''\\)\")",
       "Bash(node -e \"require\\(''./server/routes/vectors''\\)\")",
-      "Bash(node -e \"require\\(''./server/routes/vectors''\\); console.log\\(''OK''\\)\")"
+      "Bash(node -e \"require\\(''./server/routes/vectors''\\); console.log\\(''OK''\\)\")",
+      "Bash(psql --version)",
+      "Bash(pg_config --version)",
+      "Bash(pg_config --pkglibdir)",
+      "Bash(cmd.exe /c \"psql --version 2>&1\")",
+      "Bash(cmd.exe /c \"pg_config --version 2>&1\")",
+      "Bash(powershell.exe -NoProfile -NonInteractive -Command \":*)",
+      "Bash(echo \"exit: $?\")",
+      "WebFetch(domain:github.com)",
+      "WebSearch"
     ]
   }
 }
