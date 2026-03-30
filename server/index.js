@@ -24,6 +24,7 @@ app.use('/api/chat', require('./routes/chat'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/slack', require('./routes/slack'));
 app.use('/api/models', require('./routes/models'));
+app.use('/api/memory', require('./routes/memory'));
 app.use('/api/vectors', require('./routes/vectors'));
 
 // 初始化資料庫

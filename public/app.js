@@ -148,6 +148,36 @@ const mcpTools = [
       }
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'save_memory',
+      description: '將重要的使用者資訊、偏好或設定儲存到長期記憶中。當使用者說明關於他自己的事，或明確要求你記住某件事時請使用此工具。',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: '記憶的鍵值（例如：user_preference, diet, user_name）' },
+          content: { type: 'string', description: '要記憶的詳細內容' },
+        },
+        required: ['key', 'content'],
+      },
+    },
+    icon: '🧠',
+    handler: async (args) => {
+      try {
+        const res = await fetch('/api/memory/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: args.key, content: args.content }),
+        });
+        const data = await res.json();
+        if (!res.ok) return JSON.stringify({ error: data.error || '儲存記憶失敗' });
+        return JSON.stringify({ success: true, message: `已成功儲存記憶: ${args.key}` });
+      } catch (e) {
+        return JSON.stringify({ error: `儲存記憶失敗: ${e.message}` });
+      }
+    },
+  },
 ];
 
 
@@ -823,7 +853,7 @@ async function sendMessage() {
 
 const MAX_TOOL_DEPTH = 10;
 
-async function streamAIResponse(depth = 0) {
+async function streamAIResponse(depth = 0, contextData = { memoryContext: '', similarContext: '' }) {
   // 防止無限遞迴工具調用
   if (depth > MAX_TOOL_DEPTH) {
     showToast(`工具調用層數達到上限（${MAX_TOOL_DEPTH}次），已自動停止`, 'error');
@@ -841,9 +871,26 @@ async function streamAIResponse(depth = 0) {
   dom.btnStop.classList.remove('hidden');
 
   // ---- 向量語意搜尋，注入 System Prompt ----
-  let similarContextPrompt = '';
+  let memorySystemPrompt = contextData.memoryContext || '';
+  let similarContextPrompt = contextData.similarContext || '';
+
   if (depth === 0) {
-    // 向量語意搜尋：找出過去最相似的 Top-3 完整 session
+    // 1. 讀取長期記憶（key-value）
+    try {
+      const memRes = await fetch('/api/memory/get');
+      if (memRes.ok) {
+        const memData = await memRes.json();
+        if (memData.memories && memData.memories.length > 0) {
+          const memoriesStr = memData.memories.map(m => `- ${m.key}: ${m.content}`).join('\n');
+          memorySystemPrompt = `以下是關於使用者的長期記憶，請在回答時參考這些資訊：\n${memoriesStr}\n`;
+          contextData.memoryContext = memorySystemPrompt;
+        }
+      }
+    } catch (err) {
+      console.warn('自動讀取記憶失敗:', err);
+    }
+
+    // 2. 向量語意搜尋：找出過去最相似的 Top-3 完整 session
     try {
       const lastUser = [...state.messages].reverse().find(m => m.role === 'user');
       const queryText = typeof lastUser?.content === 'string'
@@ -874,6 +921,7 @@ async function streamAIResponse(depth = 0) {
               return `【相關對話 ${i + 1}】（相似度 ${sim}%）\n${dialogue}`;
             }).join('\n\n');
             similarContextPrompt = `以下是過去對話中與當前問題最相關的 Top-3 完整對話記錄，請參考這些背景資訊：\n\n${ctxStr}\n`;
+            contextData.similarContext = similarContextPrompt;
           }
         }
       }
@@ -894,8 +942,10 @@ async function streamAIResponse(depth = 0) {
       return msg;
     });
 
-  if (similarContextPrompt) {
-    apiMessages.unshift({ role: 'system', content: similarContextPrompt });
+  // 組合 System Prompt（相似記錄 + 長期記憶），插入最前方
+  const combinedSystemPrompt = [similarContextPrompt, memorySystemPrompt].filter(Boolean).join('\n');
+  if (combinedSystemPrompt) {
+    apiMessages.unshift({ role: 'system', content: combinedSystemPrompt });
   }
 
   // 取得工具定義
@@ -1132,7 +1182,7 @@ async function streamAIResponse(depth = 0) {
       }
 
       await saveMessageToDB(assistantMessage);
-      await executeToolCalls(collectedToolCalls, msgIndex, depth);
+      await executeToolCalls(collectedToolCalls, msgIndex, depth, contextData);
       return;
     }
 
@@ -1173,7 +1223,7 @@ function stopStreaming() {
 }
 
 // ============ 工具調用 ============
-async function executeToolCalls(toolCalls, assistantMsgIndex, depth = 0) {
+async function executeToolCalls(toolCalls, assistantMsgIndex, depth = 0, contextData = {}) {
   for (const tc of toolCalls) {
     const toolName = tc.function.name;
     const toolDef = mcpTools.find((t) => t.function.name === toolName);
@@ -1212,7 +1262,7 @@ async function executeToolCalls(toolCalls, assistantMsgIndex, depth = 0) {
   }
 
   // 再次呼叫 AI 處理工具結果（傳遞深度+1）
-  await streamAIResponse(depth + 1);
+  await streamAIResponse(depth + 1, contextData);
 }
 
 function appendToolCallProgress(toolName, args, callId) {
