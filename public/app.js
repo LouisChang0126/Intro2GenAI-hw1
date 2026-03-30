@@ -893,6 +893,23 @@ async function streamAIResponse(depth = 0) {
   dom.btnSend.classList.add('hidden');
   dom.btnStop.classList.remove('hidden');
 
+  // ---- 自動讀取記憶並注入 System Prompt ----
+  let memorySystemPrompt = '';
+  if (depth === 0) {
+    try {
+      const memRes = await fetch('/api/memory/get');
+      if (memRes.ok) {
+        const memData = await memRes.json();
+        if (memData.memories && memData.memories.length > 0) {
+          const memoriesStr = memData.memories.map(m => `- ${m.key}: ${m.content}`).join('\n');
+          memorySystemPrompt = `以下是關於使用者的長期記憶，請在回答時參考這些資訊：\n${memoriesStr}\n`;
+        }
+      }
+    } catch (err) {
+      console.warn('自動讀取記憶失敗:', err);
+    }
+  }
+
   // 準備訊息歷史（向下相容：content 可能是字串或陣列）
   const apiMessages = state.messages
     .filter((m) => ['user', 'assistant', 'tool', 'system'].includes(m.role))
@@ -905,13 +922,25 @@ async function streamAIResponse(depth = 0) {
       return msg;
     });
 
+  // 如果有記憶，將其作為 System Prompt 插入最前方
+  if (memorySystemPrompt) {
+    apiMessages.unshift({ role: 'system', content: memorySystemPrompt });
+  }
+
   // 取得工具定義
   const tools = mcpTools.map((t) => ({ type: t.type, function: t.function }));
+
 
   // ---- Two-Step 路由（只在第一層 depth=0 且有多組模型時運作）----
   let targetCfg = defaultCfg; // fallback：直接用預設模型
 
-  if (depth === 0 && state.modelConfigs.length > 1) {
+  // 1. 如果是工具調用繼續回覆 (depth > 0)，我們應繼承前一次的模型
+  if (depth > 0 && state.lastAnswerer) {
+    const lastCfg = state.modelConfigs.find(c => c.selectedModel === state.lastAnswerer);
+    if (lastCfg) targetCfg = lastCfg;
+  } 
+  // 2. 第一步，嘗試透過 Routing 分派
+  else if (depth === 0 && state.modelConfigs.length > 1) {
     const otherModels = state.modelConfigs.slice(1);
     const modelList = otherModels
       .map((c) => `[${c.selectedModel}: ${c.description || '通用模型'}]`)
@@ -922,10 +951,28 @@ async function streamAIResponse(depth = 0) {
     const hasVision = Array.isArray(lastUser?.content);
     const visionHint = hasVision ? '（使用者附帶了圖片，需要視覺理解能力）' : '';
 
-    const routerSystemPrompt = `你是一個智慧路由。請根據使用者的輸入${visionHint}，從以下模型清單選擇最適合的 1 個模型。只能輸出該模型的名稱，不要有其他內容。可用模型：${modelList}`;
+    const routerSystemPrompt = `根據使用者的輸入${visionHint}，從以下模型清單選擇最適合的 1 個模型。只能輸出該模型的名稱，不要有其他內容。例如：gpt-oss-20b。可用模型：${modelList}`;
+
+    // 過濾圖片內容與工具調用，簡化並避免 Router 報錯
+    const safeRouterMessages = apiMessages
+      .filter(m => m.role !== 'tool' && !m.tool_calls) // 清除工具調用影響
+      .map(m => {
+        let contentStr = '';
+        if (Array.isArray(m.content)) {
+          const textPart = m.content.find(c => c.type === 'text');
+          contentStr = `${textPart ? textPart.text : ''}\n[使用者附帶了圖片，請派發給具備視覺能力的模型]`;
+        } else {
+          contentStr = m.content;
+        }
+
+        // 清理殘留的 tool_call_id
+        const cleanMsg = { role: m.role, content: contentStr };
+        return cleanMsg;
+      });
+
     const routerMessages = [
       { role: 'system', content: routerSystemPrompt },
-      ...apiMessages,
+      ...safeRouterMessages,
     ];
 
     try {
@@ -943,11 +990,25 @@ async function streamAIResponse(depth = 0) {
 
       if (routerRes.ok) {
         const routerData = await routerRes.json();
-        const chosenModel = (routerData.choices?.[0]?.message?.content || '').trim();
-        const found = state.modelConfigs.find((c) => c.selectedModel === chosenModel);
+        const rawOutput = (routerData.choices?.[0]?.message?.content || '').trim();
+        const chosenModelText = rawOutput.toLowerCase();
+        console.log('[Router Decision Output]:', rawOutput);
+
+        // 更寬容的比對：只要 LLM 的回答中「包含」模型名稱就算命中（不分大小寫），包含對 '/' 前綴的處理
+        const found = state.modelConfigs.slice(1).find((c) => {
+          const cfgName = (c.selectedModel || '').toLowerCase();
+          const shortName = cfgName.split('/').pop(); // 如果是 provider/model，萃取後面的 model
+          return chosenModelText.includes(cfgName) || chosenModelText.includes(shortName);
+        });
         if (found) {
           targetCfg = found;
+        } else {
+          // fallback 如果文字裡找不到設定好的，去比對完全一樣的，或者記錄找不到
+          console.warn('[Router] Failed to match model from text:', rawOutput);
         }
+      } else {
+        const errData = await routerRes.json();
+        console.error('[Router API Error]:', errData);
       }
     } catch (routerErr) {
       console.warn('路由失敗，使用預設模型:', routerErr);
@@ -1042,7 +1103,7 @@ async function streamAIResponse(depth = 0) {
               if (tc.index !== undefined) {
                 if (!collectedToolCalls[tc.index]) {
                   collectedToolCalls[tc.index] = {
-                    id: tc.id || '',
+                    id: tc.id || `tc_${Date.now()}_${tc.index}`,
                     type: 'function',
                     function: { name: '', arguments: '' },
                   };
@@ -1161,7 +1222,7 @@ async function executeToolCalls(toolCalls, assistantMsgIndex, depth = 0) {
     const toolMessage = {
       role: 'tool',
       content: result,
-      tool_call_id: tc.id,
+      tool_call_id: tc.id || callId,
       session_id: state.currentSessionId,
     };
     state.messages.push(toolMessage);
