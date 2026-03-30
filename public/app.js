@@ -148,62 +148,6 @@ const mcpTools = [
       }
     },
   },
-  {
-    type: 'function',
-    function: {
-      name: 'store_memory',
-      description: '儲存或更新長期記憶。當使用者提供個人資訊、偏好或需要跨對話記住的事項時使用。',
-      parameters: {
-        type: 'object',
-        properties: {
-          key: { type: 'string', description: '記憶的鍵名，例如：user_name、preference_language、project_name' },
-          content: { type: 'string', description: '要記住的內容' },
-        },
-        required: ['key', 'content'],
-      },
-    },
-    icon: '🧠',
-    handler: async (args) => {
-      try {
-        const res = await fetch('/api/memory/set', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key: args.key, content: args.content }),
-        });
-        const data = await res.json();
-        if (!res.ok) return JSON.stringify({ error: data.error || '儲存失敗' });
-        return JSON.stringify({ success: true, key: args.key, message: '記憶已成功儲存' });
-      } catch (e) {
-        return JSON.stringify({ error: `儲存失敗: ${e.message}` });
-      }
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'retrieve_memory',
-      description: '讀取長期記憶。傳入 key 可查詢特定記憶；若 key 為空字串則返回所有記憶。',
-      parameters: {
-        type: 'object',
-        properties: {
-          key: { type: 'string', description: '記憶鍵名。若為空字串則返回全部記憶。' },
-        },
-        required: ['key'],
-      },
-    },
-    icon: '💡',
-    handler: async (args) => {
-      try {
-        const q = args.key ? `?key=${encodeURIComponent(args.key)}` : '';
-        const res = await fetch(`/api/memory/get${q}`);
-        const data = await res.json();
-        if (!res.ok) return JSON.stringify({ error: data.error || '讀取失敗' });
-        return JSON.stringify({ memories: data.memories });
-      } catch (e) {
-        return JSON.stringify({ error: `讀取失敗: ${e.message}` });
-      }
-    },
-  },
 ];
 
 
@@ -858,6 +802,9 @@ async function sendMessage() {
     });
     const savedMsg = await saved.json();
     userMessage.id = savedMsg.id;
+    // 非同步儲存向量（fire-and-forget）
+    const textForEmbedding = typeof msgContent === 'string' ? msgContent : (content || '[圖片訊息]');
+    autoStoreEmbedding(textForEmbedding, 'user', state.currentSessionId);
   } catch (err) {
     console.error('儲存訊息失敗:', err);
   }
@@ -893,9 +840,11 @@ async function streamAIResponse(depth = 0) {
   dom.btnSend.classList.add('hidden');
   dom.btnStop.classList.remove('hidden');
 
-  // ---- 自動讀取記憶並注入 System Prompt ----
+  // ---- 自動讀取記憶 + 向量語意搜尋，注入 System Prompt ----
   let memorySystemPrompt = '';
+  let similarContextPrompt = '';
   if (depth === 0) {
+    // 1. 讀取長期記憶（key-value）
     try {
       const memRes = await fetch('/api/memory/get');
       if (memRes.ok) {
@@ -907,6 +856,44 @@ async function streamAIResponse(depth = 0) {
       }
     } catch (err) {
       console.warn('自動讀取記憶失敗:', err);
+    }
+
+    // 2. 向量語意搜尋：找出過去最相似的 Top-3 完整 session
+    try {
+      const lastUser = [...state.messages].reverse().find(m => m.role === 'user');
+      const queryText = typeof lastUser?.content === 'string'
+        ? lastUser.content
+        : (lastUser?.content?.find(c => c.type === 'text')?.text || '');
+
+      if (queryText) {
+        const vecRes = await fetch('/api/vectors/search-sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: queryText,
+            threshold: 0.5,
+            limit: 3,
+            excludeSessionId: state.currentSessionId,
+          }),
+        });
+        if (vecRes.ok) {
+          const vecData = await vecRes.json();
+          if (vecData.sessions && vecData.sessions.length > 0) {
+            const ctxStr = vecData.sessions.map((s, i) => {
+              const sim = (s.similarity * 100).toFixed(1);
+              const dialogue = s.messages.map(m => {
+                const label = m.role === 'user' ? '使用者' : 'AI';
+                const text = typeof m.content === 'string' ? m.content : '[非文字內容]';
+                return `  ${label}：${text}`;
+              }).join('\n');
+              return `【相關對話 ${i + 1}】（相似度 ${sim}%）\n${dialogue}`;
+            }).join('\n\n');
+            similarContextPrompt = `以下是過去對話中與當前問題最相關的 Top-3 完整對話記錄，請參考這些背景資訊：\n\n${ctxStr}\n`;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('向量語意搜尋失敗（不影響主流程）:', err);
     }
   }
 
@@ -922,9 +909,10 @@ async function streamAIResponse(depth = 0) {
       return msg;
     });
 
-  // 如果有記憶，將其作為 System Prompt 插入最前方
-  if (memorySystemPrompt) {
-    apiMessages.unshift({ role: 'system', content: memorySystemPrompt });
+  // 組合 System Prompt（相似記錄 + 長期記憶），插入最前方
+  const combinedSystemPrompt = [similarContextPrompt, memorySystemPrompt].filter(Boolean).join('\n');
+  if (combinedSystemPrompt) {
+    apiMessages.unshift({ role: 'system', content: combinedSystemPrompt });
   }
 
   // 取得工具定義
@@ -939,76 +927,36 @@ async function streamAIResponse(depth = 0) {
     const lastCfg = state.modelConfigs.find(c => c.selectedModel === state.lastAnswerer);
     if (lastCfg) targetCfg = lastCfg;
   } 
-  // 2. 第一步，嘗試透過 Routing 分派
+  // 2. 第一步，用 embedding 相似度路由到最適合的專家模型（不需要 LLM 呼叫）
   else if (depth === 0 && state.modelConfigs.length > 1) {
     const otherModels = state.modelConfigs.slice(1);
-    const modelList = otherModels
-      .map((c) => `[${c.selectedModel}: ${c.description || '通用模型'}]`)
-      .join(', ');
 
-    // 檢查最後一則使用者訊息是否含圖片
+    // 取得 user prompt 文字（圖片附帶 vision hint）
     const lastUser = [...state.messages].reverse().find(m => m.role === 'user');
     const hasVision = Array.isArray(lastUser?.content);
-    const visionHint = hasVision ? '（使用者附帶了圖片，需要視覺理解能力）' : '';
-
-    const routerSystemPrompt = `根據使用者的輸入${visionHint}，從以下模型清單選擇最適合的 1 個模型。只能輸出該模型的名稱，不要有其他內容。例如：gpt-oss-20b。可用模型：${modelList}`;
-
-    // 過濾圖片內容與工具調用，簡化並避免 Router 報錯
-    const safeRouterMessages = apiMessages
-      .filter(m => m.role !== 'tool' && !m.tool_calls) // 清除工具調用影響
-      .map(m => {
-        let contentStr = '';
-        if (Array.isArray(m.content)) {
-          const textPart = m.content.find(c => c.type === 'text');
-          contentStr = `${textPart ? textPart.text : ''}\n[使用者附帶了圖片，請派發給具備視覺能力的模型]`;
-        } else {
-          contentStr = m.content;
-        }
-
-        // 清理殘留的 tool_call_id
-        const cleanMsg = { role: m.role, content: contentStr };
-        return cleanMsg;
-      });
-
-    const routerMessages = [
-      { role: 'system', content: routerSystemPrompt },
-      ...safeRouterMessages,
-    ];
+    const baseText = hasVision
+      ? ((lastUser.content.find(c => c.type === 'text')?.text || '') + ' [圖片，需要視覺理解能力]')
+      : (typeof lastUser?.content === 'string' ? lastUser.content : '');
 
     try {
-      const routerRes = await fetch('/api/chat', {
+      const routeRes = await fetch('/api/vectors/route', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          apiKey: defaultCfg.apiKey,
-          apiBaseUrl: defaultCfg.apiBaseUrl || undefined,
-          model: defaultCfg.selectedModel,
-          messages: routerMessages,
-          stream: false,
+          text: baseText,
+          models: otherModels.map(c => ({
+            name: c.selectedModel,
+            description: c.description || c.selectedModel,
+          })),
         }),
       });
 
-      if (routerRes.ok) {
-        const routerData = await routerRes.json();
-        const rawOutput = (routerData.choices?.[0]?.message?.content || '').trim();
-        const chosenModelText = rawOutput.toLowerCase();
-        console.log('[Router Decision Output]:', rawOutput);
-
-        // 更寬容的比對：只要 LLM 的回答中「包含」模型名稱就算命中（不分大小寫），包含對 '/' 前綴的處理
-        const found = state.modelConfigs.slice(1).find((c) => {
-          const cfgName = (c.selectedModel || '').toLowerCase();
-          const shortName = cfgName.split('/').pop(); // 如果是 provider/model，萃取後面的 model
-          return chosenModelText.includes(cfgName) || chosenModelText.includes(shortName);
-        });
-        if (found) {
-          targetCfg = found;
-        } else {
-          // fallback 如果文字裡找不到設定好的，去比對完全一樣的，或者記錄找不到
-          console.warn('[Router] Failed to match model from text:', rawOutput);
-        }
+      if (routeRes.ok) {
+        const routeData = await routeRes.json();
+        const found = state.modelConfigs.slice(1).find(c => c.selectedModel === routeData.selectedModel);
+        if (found) targetCfg = found;
       } else {
-        const errData = await routerRes.json();
-        console.error('[Router API Error]:', errData);
+        console.warn('[Router] /api/vectors/route 失敗，使用預設模型');
       }
     } catch (routerErr) {
       console.warn('路由失敗，使用預設模型:', routerErr);
@@ -1167,6 +1115,11 @@ async function streamAIResponse(depth = 0) {
     // 儲存 assistant 訊息
     const savedAssistant = await saveMessageToDB(assistantMessage);
     if (savedAssistant) assistantMessage.id = savedAssistant.id;
+
+    // 非同步儲存向量（fire-and-forget）
+    if (assistantMessage.content) {
+      autoStoreEmbedding(assistantMessage.content, 'assistant', state.currentSessionId);
+    }
 
     // 最終渲染
     finalizeStreamingMessage(assistantMessage);
@@ -1446,6 +1399,21 @@ async function forkFromMessage(messageId) {
 }
 
 // ============ 工具函數 ============
+// 非同步向量儲存（fire-and-forget，失敗不影響主流程）
+// 使用 server 端本地模型，不需要 API key
+async function autoStoreEmbedding(text, role, sessionId) {
+  if (!text) return;
+  try {
+    await fetch('/api/vectors/store', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, role, sessionId }),
+    });
+  } catch (err) {
+    console.warn('向量儲存失敗（不影響主流程）:', err);
+  }
+}
+
 async function saveMessageToDB(msg) {
   try {
     const res = await fetch('/api/messages', {
