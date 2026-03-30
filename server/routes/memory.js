@@ -45,5 +45,16 @@ router.post('/set', async (req, res) => {
         res.status(500).json({ error: '儲存記憶失敗' });
     }
 });
+// DELETE /api/memory/clear
+router.delete('/clear', async (req, res) => {
+    try {
+        const { user_id = 'default_user' } = req.query;
+        await db.query('DELETE FROM memories WHERE user_id = $1', [user_id]);
+        res.json({ success: true, message: '長期記憶已清除' });
+    } catch (err) {
+        console.error('Memory clear error:', err);
+        res.status(500).json({ error: '清除記憶失敗' });
+    }
+});
 
 module.exports = router;

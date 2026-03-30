@@ -204,6 +204,7 @@ const dom = {
   btnSettings: $('#btnSettings'),
   btnCloseSettings: $('#btnCloseSettings'),
   btnSaveSettings: $('#btnSaveSettings'),
+  btnClearMemory: $('#btnClearMemory'),
   modelConfigList: $('#modelConfigList'),
   btnAddModelConfig: $('#btnAddModelConfig'),
   // Image Upload
@@ -264,6 +265,18 @@ function bindEvents() {
   });
   dom.btnCloseSettings.addEventListener('click', () => dom.settingsModal.classList.add('hidden'));
   dom.btnSaveSettings.addEventListener('click', saveSettings);
+  dom.btnClearMemory.addEventListener('click', async () => {
+    if (confirm('確定要清除所有的長期記憶嗎？此操作無法復原。')) {
+      try {
+        const res = await fetch('/api/memory/clear', { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '清除失敗');
+        showToast('長期記憶已清除');
+      } catch (e) {
+        showToast(e.message, 'error');
+      }
+    }
+  });
   dom.btnAddModelConfig.addEventListener('click', addModelConfigCard);
 
   // 圖片上傳
